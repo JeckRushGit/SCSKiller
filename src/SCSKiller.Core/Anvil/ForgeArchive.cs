@@ -145,6 +145,7 @@ public sealed class ForgeArchive : IDisposable
 
         return formatVersion switch
         {
+            0 when blocks.Count == 0 => [],
             0 => [new Resource(df.FileId, df.FileType, df.Name, decompressed)],
             128 => ParseResourceContainer(df, decompressed),
             _ => throw new InvalidDataException($"{df.Name}: unknown format version {formatVersion}"),
@@ -163,9 +164,10 @@ public sealed class ForgeArchive : IDisposable
 
         if (formatVersion == 0)
         {
-            // Rare single-block layout: a count byte (only 1 is known), then (compressed, uncompressed) u32 pair.
+            // Rare single-block layout: a count byte, then (compressed, uncompressed) u32 pair. Count 0 is an empty
+            // section (the patch forges' PrefetchingFileInfos): no blocks, so no resources.
             int count = r.ReadU8();
-            if (count != 1) throw new InvalidDataException($"format 0 block count {count} not supported");
+            if (count > 1) throw new InvalidDataException($"format 0 block count {count} not supported");
             for (int i = 0; i < count; i++)
             {
                 int compressed = (int)r.ReadU32();

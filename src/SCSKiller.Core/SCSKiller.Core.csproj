@@ -34,6 +34,18 @@
     <EmbeddedResource Include="..\..\CHANGELOG.md" LogicalName="SCSKiller.Core.CHANGELOG.md" />
   </ItemGroup>
 
+  <!-- lzo64.dll for the Anvil .forge reader (Anvil/AnvilLzo.cs): a third-party binary, never committed (*.dll is ignored).
+       Put it in third_party\lzo\ or pass -p:LzoDll=<path>; it is copied next to the App's and the CLI's exe. -->
+  <PropertyGroup>
+    <LzoDll Condition="'$(LzoDll)' == ''">$(MSBuildThisFileDirectory)..\..\third_party\lzo\lzo64.dll</LzoDll>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('$(LzoDll)')">
+    <None Include="$(LzoDll)" Link="lzo64.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="WarnNoLzo" BeforeTargets="Build" Condition="!Exists('$(LzoDll)')">
+    <Warning Text="lzo64.dll not found at $(LzoDll): AC Unity's .forge archives won't be read" />
+  </Target>
+
   <!-- the commit, also in a release (publish.ps1 drops it from the informational version): ScsKiller.CoreBuild keys the scan cache on it -->
   <Target Name="EmbedSourceRevision" DependsOnTargets="InitializeSourceControlInformation" BeforeTargets="GetAssemblyAttributes"
           Condition="'$(SourceControlInformationFeatureSupported)' == 'true'">
