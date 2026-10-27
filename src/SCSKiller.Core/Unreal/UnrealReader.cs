@@ -10,6 +10,7 @@ using CUE4Parse.Encryption.Aes;
 using CUE4Parse.FileProvider;
 using CUE4Parse.FileProvider.Objects;
 using CUE4Parse.FileProvider.Vfs;
+using CUE4Parse.GameTypes.ACE7.Encryption;
 using CUE4Parse.MappingsProvider;
 using CUE4Parse.UE4.Readers;
 using CUE4Parse.UE4.Assets;
@@ -52,6 +53,9 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
     /// A game without readable shader libraries that has encrypted containers gets its AES key from <see cref="UnrealKeys"/>
     /// (a one-time static scan of its exe) and is then indexable. Without libraries the shaders are inside the packages;
     /// the platforms then come from the global shader caches (GlobalShaderCache-&lt;platform&gt;.bin).</summary>
+    /// <summary>2 for ACE COMBAT 7: its packages are carved decrypted (version 1 read them still encrypted: global shaders only).</summary>
+    public int ReaderVersion(EngineInfo engine) => engine.Fork == nameof(EGame.GAME_AceCombat7) ? 2 : 1;
+
     public EngineInfo? Detect(Game game) => Detect(game, out _);
 
     /// <param name="notes">the evidence the graphics API was decided on, and for an encrypted game how its key was found or not
@@ -701,7 +705,17 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         provider.Files.FindPayloads(f, out var uexp, out _, out _);
         static string At(GameFile g) => g is VfsEntry v ? $"{g.Path}|{v.Vfs.Name}:{v.Offset}:{g.Size}" : $"{g.Path}|{g.Size}";
         stamp = uexp == null ? At(f) : $"{At(f)}|{At(uexp)}";
-        return uexp == null ? [f.Read()] : [f.Read(), uexp.Read()];
+        byte[][] parts = uexp == null ? [f.Read()] : [f.Read(), uexp.Read()];
+        if (provider.Versions.Game == EGame.GAME_AceCombat7 && parts[0].AsSpan().StartsWith("ACE7"u8))
+        {
+            // ACE COMBAT 7's packages are XOR-encrypted under the pak AES, keyed by the package name; CUE4Parse undoes it
+            // only when it parses a package, and the carver reads the raw bytes
+            var key = new ACE7XORKey(f.NameWithoutExtension);
+            var ace7 = new ACE7Decrypt();
+            parts[0] = ace7.DecryptUasset(parts[0], key);
+            if (uexp != null) parts[1] = ace7.DecryptUexp(parts[1], key);
+        }
+        return parts;
     }
 
     static long PackageSize(DefaultFileProvider provider, GameFile f)

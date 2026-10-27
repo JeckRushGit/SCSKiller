@@ -4,6 +4,11 @@ All notable changes to the SCSKiller app and command line. Versions follow [Sema
 
 ## [Unreleased]
 
+**Fixed**
+
+- ACE COMBAT 7: SKIES UNKNOWN compiles its materials' shaders (about 34,000) instead of only the engine's global ones,
+  which made a cache of about 16 MB. Compile it again to include them.
+
 ## [1.3.3] - 2026-10-26
 
 **Fixed**
