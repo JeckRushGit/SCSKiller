@@ -178,6 +178,7 @@ public sealed partial class ScsKiller : IScsKiller
     {
         dataDir ??= AppStore.DefaultDir;
         var carved = new CarvedReader();
+        Anvil.AnvilLzo.Install();   // wire the native LZO decompressor the Anvil .forge reader needs
         return new EngineReaders([("Unreal", new UnrealReader(dataDir)), (FromSoftReader.Family, new FromSoftReader(dataDir)),
             (UnityReader.Family, new UnityReader()), (ReEngine.ReEngineReader.Family, new ReEngine.ReEngineReader(dataDir)),
             (RedEngine.RedEngineReader.Family, new RedEngine.RedEngineReader()), (Dagor.DagorReader.Family, new Dagor.DagorReader()), (Northlight.NorthlightReader.Family, new Northlight.NorthlightReader()),
@@ -189,6 +190,7 @@ public sealed partial class ScsKiller : IScsKiller
             (Decima.DecimaReader.Family, new Decima.DecimaReader(dataDir)),
             (Luminous.LuminousReader.Family, new Luminous.LuminousReader()),
             (ForzaTech.ForzaTechReader.Family, new ForzaTech.ForzaTechReader()),
+            (Anvil.AnvilReader.Family, new Anvil.AnvilReader()),   // before Carved: handles AC Unity's packed .forge shaders
             .. CarvedReader.Families.Select(f => (f, (IEngineReader)carved))]);
     }
 
