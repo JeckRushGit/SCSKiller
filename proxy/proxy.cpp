@@ -138,6 +138,11 @@ static uint64_t g_repeats, g_slow_repeats;  // creates of a desc this process cr
 static HashSet g_created;                    // every key this process created (note)
 static std::atomic<uint64_t> g_warm_ok, g_warm_fail, g_warm_crash;  // crash: skipped, it removed the device in an earlier run
 static std::atomic<uint64_t> g_warm_other;                       // items of another pass: counted done, never created
+// SCSKiller_CountCached: d3dscache's ShaderCache_AddValue calls on this thread. A create that made none stored no compile:
+// the runtime served it from a cache, the game's delivery when one is registered for the staged exe
+static thread_local uint64_t t_cache_adds;
+static std::atomic<bool> g_count_cached;
+static std::atomic<uint64_t> g_warm_cached;  // of g_warm_ok: pipelines created without a compile stored
 static std::atomic<uint64_t> g_warm_skipped;  // skipped for this compile only: a PSO or state object that hung, or a state object that faulted or builds on a skipped one
 // work finished inside an item that counts done only at its end: a state object built as another's dependency, a D3D11
 // item of a batch (scskiller_warm's progress "work", which the app's stall watchdog reads with done)
@@ -437,7 +442,9 @@ static void refused(const char* why) {
 // says so. Decided here at each launch, from Steam's own files as they are now (the app may have been closed while Steam
 // added VAC): an exe in a Steam library is the app whose appmanifest names its folder, and it records only when that app
 // isn't one of Valve's VAC titles and appinfo.vdf has its info without the "Valve Anti-Cheat enabled" category (category_8).
-// Anything that can't be read or found refuses. An exe outside every Steam library isn't Steam's: no VAC.
+// Anything that can't be read or found refuses. An exe outside every Steam library isn't Steam's: no VAC, unless a
+// steam_appid.txt between it and the install root names a Steam app (Steamworks starts the game as that app). One naming an
+// app Steam has no info about (named_vac) refuses only outside a risk session.
 static std::string read_all(const std::wstring& path, size_t cap = 1 << 20) {
     std::string s;
     if (FILE* f = _wfsopen(path.c_str(), L"rb", _SH_DENYNO)) {
@@ -473,6 +480,15 @@ static bool under(const std::wstring& path, std::wstring dir) {
     return path.size() > dir.size() + 1 && path[dir.size()] == L'\\' && !_wcsnicmp(path.c_str(), dir.c_str(), dir.size());
 }
 static const uint32_t kValveVac[] = {10, 80, 240, 300, 320, 440, 500, 550, 570, 730, 4000, 1422450};  // Games.Vac.Valve
+// vac_of's findings that Steam has no info about the app, compared by address
+static const char kVacNoSteam[] = "VAC: Steam's folder is unknown";
+static const char kVacNoAppinfo[] = "VAC: Steam has no appinfo.vdf";
+static const char kVacNotListed[] = "VAC: the game isn't in Steam's appinfo.vdf";
+static const char kVacNoInfo[] = "VAC: Steam has no info about the game";
+// A steam_appid.txt naming an app Steam has no info about (Games.Vac.Named): refused, but a risk session may record it.
+static const char* named_vac(const char* why) {
+    return why == kVacNoSteam || why == kVacNoAppinfo || why == kVacNotListed || why == kVacNoInfo ? "VAC (Steam has no info about the app steam_appid.txt names)" : why;
+}
 // Steam's appinfo.vdf (Games.SteamSource.AppInfoPath). Under Wine (Proton) it is the one of the Steam that started the game
 // (STEAM_COMPAT_CLIENT_INSTALL_PATH, through Wine's drives), even when a Steam in the prefix has its own, which can be stale.
 // Never the game's library: it can be an abandoned Steam's folder. The variable empty: the registry's Steam's, which
@@ -547,51 +563,30 @@ struct Kv {
     }
 };
 
-// nullptr: records; else why not. Never throws: a failure anywhere refuses for a game in a Steam library.
-static const char* vac_now_unguarded() {
-    const std::wstring exe = module_path(nullptr);
-    if (exe.empty()) return "VAC: the game's path can't be read";  // a cut path could hide its steamapps\common folder
-    // a game in a steamapps\common folder is Steam's wherever its library is: the library is the path itself
-    std::wstring lower = exe;
-    for (auto& c : lower) c = c == L'/' ? L'\\' : towlower(c);
-    const size_t sc = lower.find(L"\\steamapps\\common\\");
+// Steam's folder, backslashed; false when it is unknown.
+static bool steam_root(std::wstring& steam) {
     wchar_t root[MAX_PATH];
     DWORD n = sizeof root;
-    bool have_root = true;
     // tests: another Steam folder, only in a process exporting SCSKiller_WarmHost (selftest), never a game
     if (GetProcAddress(GetModuleHandleW(nullptr), "SCSKiller_WarmHost") && GetEnvironmentVariableW(L"SCSKILLER_TEST_STEAM_ROOT", root, MAX_PATH)) {
-    } else if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, nullptr, root, &n) != ERROR_SUCCESS) have_root = false;
-    if (!have_root) return sc != std::wstring::npos ? "VAC: in a Steam game folder, and Steam's folder is unknown" : nullptr;
-    std::wstring steam = root;
+    } else if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, nullptr, root, &n) != ERROR_SUCCESS) return false;
+    steam = root;
     for (auto& c : steam) if (c == L'/') c = L'\\';
-    std::wstring lib;
-    if (sc != std::wstring::npos) lib = exe.substr(0, sc);
-    else {
-        // elsewhere in a library (its root, a folder beside steamapps): Steam's, but not a game folder Steam names
-        std::vector<std::wstring> libs = {steam};
-        for (auto& p : vdf_values(read_all(steam + L"\\steamapps\\libraryfolders.vdf"), "path")) libs.push_back(widen(p));
-        for (auto& l : libs) if (under(exe, l)) return "VAC: in a Steam library, not a Steam game folder";
-        return nullptr;  // outside every library Steam lists, and not in a steamapps\common folder: not Steam's
-    }
-    std::wstring rest = exe.substr(sc + wcslen(L"\\steamapps\\common\\")), folder = rest.substr(0, rest.find(L'\\'));
-    uint32_t app = 0;
-    WIN32_FIND_DATAW fd;
-    std::wstring apps = lib + L"\\steamapps\\";
-    HANDLE h = FindFirstFileW((apps + L"appmanifest_*.acf").c_str(), &fd);
-    for (bool ok = h != INVALID_HANDLE_VALUE; ok && !app; ok = FindNextFileW(h, &fd)) {
-        std::string t = read_all(apps + fd.cFileName, 1 << 16);
-        auto dirs = vdf_values(t, "installdir"), ids = vdf_values(t, "appid");
-        if (!dirs.empty() && !ids.empty() && !_wcsicmp(widen(dirs[0]).c_str(), folder.c_str())) app = (uint32_t)strtoul(ids[0].c_str(), nullptr, 10);
-    }
-    if (h != INVALID_HANDLE_VALUE) FindClose(h);
-    if (!app) return "VAC: no Steam manifest names the game's folder";
+    return true;
+}
+
+// The Steam app's VAC: a Valve VAC title, or appinfo.vdf's info about it marks VAC or can't be had (steam "": Steam's
+// folder is unknown). nullptr: no VAC.
+static const char* vac_of(uint32_t app, const std::wstring& steam) {
     if (std::find(std::begin(kValveVac), std::end(kValveVac), app) != std::end(kValveVac)) return "VAC (a Valve game)";
+    if (steam.empty()) return kVacNoSteam;
     // appinfo.vdf: u32 magic (v28 0x07564428, v29 0x07564429), u32 universe, [v29: i64 offset of the key string table],
     // then entries {u32 app, u32 size, u32 info state (2: Steam has the info), 56 more bytes, binary KeyValues} until app 0
-    FILE* f = _wfsopen(appinfo_path(steam).c_str(), L"rb", _SH_DENYNO);
-    if (!f) return "VAC: Steam's appinfo.vdf can't be read";
+    const std::wstring path = appinfo_path(steam);
+    FILE* f = path.empty() ? nullptr : _wfsopen(path.c_str(), L"rb", _SH_DENYNO);
+    if (!f) return !path.empty() && errno == ENOENT ? kVacNoAppinfo : "VAC: Steam's appinfo.vdf can't be read";
     const int64_t flen = _filelengthi64(_fileno(f));
-    const char* why = "VAC: the game isn't in Steam's appinfo.vdf";
+    const char* why = "VAC: Steam's appinfo.vdf can't be read";
     uint32_t hd[2] = {};
     int64_t table = 0;
     std::string entry;
@@ -599,7 +594,10 @@ static const char* vac_now_unguarded() {
     if (fread(hd, 4, 2, f) != 2 || (hd[0] != 0x07564428 && hd[0] != 0x07564429) || (hd[0] == 0x07564429 && (fread(&table, 8, 1, f) != 1 || table < 16 || table >= flen)))
         why = "VAC: Steam's appinfo.vdf isn't understood";
     else
-        for (uint32_t a[2]; fread(a, 4, 2, f) == 2 && a[0];) {
+        for (uint32_t a[2]; fread(a, 4, 1, f) == 1;) {
+            // only a list read to its end, its app 0 before v29's string table, says the app isn't in it
+            if (!a[0]) { if (hd[0] != 0x07564429 || _ftelli64(f) <= table) why = kVacNotListed; break; }
+            if (fread(a + 1, 4, 1, f) != 1) break;
             const int64_t left = (hd[0] == 0x07564429 ? table : flen) - _ftelli64(f);
             if (a[1] > left) { why = "VAC: Steam's appinfo.vdf is damaged"; break; }
             if (a[0] != app) { if (_fseeki64(f, a[1], SEEK_CUR)) break; continue; }
@@ -629,15 +627,103 @@ static const char* vac_now_unguarded() {
     memcpy(&state, entry.data(), 4);
     Kv kv{entry, 60, hd[0] == 0x07564429 ? &names : nullptr};
     if (!kv.object(0, 0)) return "VAC: the game's entry in appinfo.vdf is damaged";
-    if (!kv.common) return "VAC: Steam has no info about the game";
+    if (!kv.common) return kVacNoInfo;
     if (kv.vac) return "VAC (Steam marks the game)";
-    if (!kv.category && state != 2) return "VAC: Steam has no info about the game";
+    if (!kv.category && state != 2) return kVacNoInfo;
     return nullptr;
 }
 
-static const char* vac_now() {
+// A Steam app id as Steam writes one in steam_appid.txt: decimal, 1 to 2^32-1. 0: not one.
+static uint32_t app_id(const std::string& s) {
+    if (s.empty() || s.size() > 10 || s.find_first_not_of("0123456789") != std::string::npos) return 0;
+    const unsigned long long v = strtoull(s.c_str(), nullptr, 10);
+    return v > UINT32_MAX ? 0 : (uint32_t)v;
+}
+
+// The VAC of the app each steam_appid.txt in dirs names, by any case of its name: a case-sensitive folder can hold several.
+// A folder that can't be listed, or a file that can't be read, refuses, and so does one whose leading digits are no app id. One without them names none.
+static const char* vac_named(const std::vector<std::wstring>& dirs) {
+    const char* vac = nullptr;
+    for (auto& d : dirs) {
+        std::vector<std::wstring> files;
+        WIN32_FIND_DATAW fd;
+        HANDLE f = FindFirstFileExW(long_path(d + L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+        if (f == INVALID_HANDLE_VALUE) return "VAC: a folder can't be checked for steam_appid.txt";
+        bool listed = true;
+        for (size_t read = 0;;) {
+            if (++read > 100000) { listed = false; break; }
+            if (!_wcsicmp(fd.cFileName, L"steam_appid.txt")) files.push_back(d + fd.cFileName);
+            if (!FindNextFileW(f, &fd)) { listed = GetLastError() == ERROR_NO_MORE_FILES; break; }
+        }
+        FindClose(f);
+        if (!listed) return "VAC: a folder can't be checked for steam_appid.txt";
+        for (auto& file : files) {
+            HANDLE h = CreateFileW(long_path(file).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (h == INVALID_HANDLE_VALUE) return "VAC: a steam_appid.txt can't be read";
+            LARGE_INTEGER size;
+            std::string text;
+            DWORD got = 0;
+            bool ok = GetFileType(h) == FILE_TYPE_DISK && GetFileSizeEx(h, &size) && size.QuadPart <= 4096;
+            if (ok) text.resize((size_t)size.QuadPart), ok = text.empty() || (ReadFile(h, text.data(), (DWORD)text.size(), &got, nullptr) && got == text.size());
+            CloseHandle(h);
+            if (!ok) return "VAC: a steam_appid.txt can't be read";
+            if (!text.rfind("\xEF\xBB\xBF", 0)) text.erase(0, 3);
+            // Steamworks takes the leading digits: a file without them names no app
+            const size_t a = text.find_first_not_of(" \t\r\n\v\f+");
+            const std::string digits = a == std::string::npos ? "" : text.substr(a, text.find_first_not_of("0123456789", a) - a);
+            if (digits.empty()) continue;
+            const uint32_t app = app_id(digits);
+            if (!app) return "VAC: a steam_appid.txt is malformed";
+            std::wstring steam;
+            const char* why = named_vac(vac_of(app, steam_root(steam) ? steam : L""));
+            if (why && !strncmp(why, "VAC:", 4)) return why;
+            if (why) vac = why;
+        }
+    }
+    return vac;
+}
+
+// nullptr: records; else why not. Never throws: a failure anywhere refuses for a game in a Steam library.
+static const char* vac_now_unguarded() {
+    const std::wstring exe = module_path(nullptr);
+    if (exe.empty()) return "VAC: the game's path can't be read";  // a cut path could hide its steamapps\common folder
+    // a game in a steamapps\common folder is Steam's wherever its library is: the library is the path itself
+    std::wstring lower = exe;
+    for (auto& c : lower) c = c == L'/' ? L'\\' : towlower(c);
+    const size_t sc = lower.find(L"\\steamapps\\common\\");
+    std::wstring steam;
+    if (!steam_root(steam)) return sc != std::wstring::npos ? "VAC: in a Steam game folder, and Steam's folder is unknown" : nullptr;
+    std::wstring lib;
+    if (sc != std::wstring::npos) lib = exe.substr(0, sc);
+    else {
+        // elsewhere in a library (its root, a folder beside steamapps): Steam's, but not a game folder Steam names
+        std::vector<std::wstring> libs = {steam};
+        for (auto& p : vdf_values(read_all(steam + L"\\steamapps\\libraryfolders.vdf"), "path")) libs.push_back(widen(p));
+        for (auto& l : libs) if (under(exe, l)) return "VAC: in a Steam library, not a Steam game folder";
+        return nullptr;  // outside every library Steam lists, and not in a steamapps\common folder: not Steam's
+    }
+    std::wstring rest = exe.substr(sc + wcslen(L"\\steamapps\\common\\")), folder = rest.substr(0, rest.find(L'\\'));
+    uint32_t app = 0;
+    WIN32_FIND_DATAW fd;
+    std::wstring apps = lib + L"\\steamapps\\";
+    HANDLE h = FindFirstFileW((apps + L"appmanifest_*.acf").c_str(), &fd);
+    for (bool ok = h != INVALID_HANDLE_VALUE; ok && !app; ok = FindNextFileW(h, &fd)) {
+        std::string t = read_all(apps + fd.cFileName, 1 << 16);
+        auto dirs = vdf_values(t, "installdir"), ids = vdf_values(t, "appid");
+        if (!dirs.empty() && !ids.empty() && !_wcsicmp(widen(dirs[0]).c_str(), folder.c_str())) app = (uint32_t)strtoul(ids[0].c_str(), nullptr, 10);
+    }
+    if (h != INVALID_HANDLE_VALUE) FindClose(h);
+    if (!app) return "VAC: no Steam manifest names the game's folder";
+    return vac_of(app, steam);
+}
+
+// The exe's own app's VAC, else a steam_appid.txt's: a finding that refuses even a risk session ("VAC:") comes first.
+static const char* vac_now(const std::vector<std::wstring>& dirs) {
     try {
-        return vac_now_unguarded();
+        const char* own = vac_now_unguarded();
+        if (own && !strncmp(own, "VAC:", 4)) return own;
+        const char* named = vac_named(dirs);
+        return named && (!own || !strncmp(named, "VAC:", 4)) ? named : own;
     } catch (...) {
         return "VAC: Steam's files couldn't be checked";
     }
@@ -887,7 +973,7 @@ static const char* admission_verdict(bool whole, const std::string& read, bool e
             for (auto& n : names) found.push_back(n + (beside ? " (next to the exe)" : " (in the install folder)"));
             if (!risk) break;
         }
-        why = decide(risk, riot_games(), found, found_why, anti_cheat_loaded(), vac_now(), seen);
+        why = decide(risk, riot_games(), found, found_why, anti_cheat_loaded(), vac_now(dirs), seen);
     }
     // tests: a change in between. SCSKILLER_TEST_ADMIT_GATE=<name>: sets the event <name>.checked, waits for <name>.go.
     // Only in a process exporting SCSKiller_WarmHost (selftest), never a game.
@@ -2056,6 +2142,7 @@ struct SoSlot {
     HRESULT hr = E_FAIL;
     std::string why;  // decode / dependency failure; empty = the driver's hr
     bool skipped = false;  // it, or one it builds on, crashed or hung the driver: skipped, not failed
+    bool known = false;    // ...in an earlier compile on this driver (--known-keys)
     ID3D12StateObject* obj = nullptr;
     std::atomic<bool> building{false}, done{false};  // done is set before building clears, both under g_defer_mx
 };
@@ -2078,6 +2165,7 @@ struct SoClock {
         double since, limit;
     };
     std::atomic<Seg> seg{Seg{0, 0}};
+    std::atomic<size_t> creating{SIZE_MAX};  // the state object so_create is on: the item's own, or one it builds on
 };
 static thread_local SoClock* t_so_clock;
 static double g_stuck_ms = 60000;
@@ -2101,9 +2189,25 @@ static std::atomic<bool> g_rt_off;                 // poisoned
 static int g_rt_threads;                           // SCSKiller_WarmRt: concurrent state object creates, 0 = no limit
 static std::unordered_set<size_t> g_skip;          // --skip: counted skipped, never replayed
 static std::atomic<size_t> g_rt_fatal = SIZE_MAX;  // the state object whose fault / hang poisoned this run; the others are retried
-static void rt_stop(const char* why, size_t j) {
+// An item that crashed or hung this driver in an earlier compile (--known-keys, the app keeps them per game and driver) is
+// skipped like --skip, it and what builds on it counted apart (SCSKiller_Known). This run's own such items, never what
+// builds on them, go back to the app as keys.
+static HashSet g_known_keys;
+static std::unordered_set<size_t> g_known_items;   // this run's items with one of those keys
+static std::atomic<uint64_t> g_warm_known;   // of g_warm_skipped: g_known_items and what builds on them
+static uint64_t g_retry_known;               // ...those among the items before the retry's first
+static std::mutex g_culprit_mx;
+static std::vector<size_t> g_culprits;       // this run's items skipped for hanging or faulting the driver themselves
+static std::string g_culprit_json;
+static void culprit(size_t j) {
+    std::lock_guard l(g_culprit_mx);
+    g_culprits.push_back(j);
+}
+static constexpr size_t kNoBlame = SIZE_MAX - 1;  // rt_stop: the hang can't be pinned on one state object, none is remembered
+static void rt_stop(const char* why, size_t j, size_t blame = SIZE_MAX) {
     bool was = false;  // only the poisoning call names the culprit: one after an unknown poison may be its victim
     if (!g_rt_off.compare_exchange_strong(was, true)) return;
+    if (j != SIZE_MAX && blame != kNoBlame) culprit(blame != SIZE_MAX ? blame : j);
     if (j != SIZE_MAX) g_rt_fatal = j, logf("warm: item %zu: %s: it and what builds on it are skipped for this compile", j, why);
     logf("warm: item %zu: %s: this process's driver can't be trusted for ray tracing any more; the state objects left run in a new process%s", j, why, j == SIZE_MAX ? " with fewer threads" : "");
 }
@@ -2237,6 +2341,10 @@ static void park(ID3D12StateObject* o) {
 static SoSlot& so_make(size_t j);
 
 static void so_create(size_t j, SoSlot& s) {
+    struct Creating {
+        size_t was;
+        ~Creating() { if (t_so_clock) t_so_clock->creating = was; }
+    } creating{t_so_clock ? t_so_clock->creating.exchange(j) : SIZE_MAX};
     const Rec& rec = g_recs[j];
     Reader r{rec.payload};
     std::string dep_why;
@@ -2249,7 +2357,7 @@ static void so_create(size_t j, SoSlot& s) {
         so_untime();  // created here (timed on its own) or by another worker
         SoSlot& d = so_make(it->second);
         so_time(g_stuck_ms);
-        if (!d.obj) { dep_why = "the state object it builds on failed", s.skipped = d.skipped, r.fail("dependency"); return nullptr; }
+        if (!d.obj) { dep_why = "the state object it builds on failed", s.skipped = d.skipped, s.known = d.known, r.fail("dependency"); return nullptr; }
         return ++linked, d.obj;
     };
     ID3D12StateObject* base = rec.tag == 'A' ? dep(r.hash()) : nullptr;
@@ -2351,8 +2459,10 @@ static int replay(size_t j, const Rec& rec, const Override* ovr = nullptr, const
     Reader r{rec.payload};
     r.ovr = ovr;
     ID3D12PipelineState* pso = nullptr;
+    const uint64_t adds = t_cache_adds;
     HRESULT hr = build(rec, r, &pso, ovr ? nv : nvext_of(rec.tag, rec.payload));
     if (pso) pso->Release();  // the driver keeps the compiled result in its disk cache
+    if (SUCCEEDED(hr) && g_count_cached && t_cache_adds == adds) ++g_warm_cached;
     if (FAILED(hr) && r.ok && removed()) return -2;
     if (FAILED(hr)) {
         char what[160];
@@ -2376,10 +2486,11 @@ static int replay_plan(size_t j, const std::string& p) {
 // (rt_stop), a PSO's ends the replay (g_fault_code), a D3D11 item's is skipped and a few stop the warm.
 static std::atomic<int> g_warm_faults;
 static bool is_so(size_t j, size_t nrec) { return j < nrec && (g_recs[j].tag == 'R' || g_recs[j].tag == 'A'); }
+static bool known_skip(size_t j, size_t nrec) { return g_known_items.count(j) || (is_so(j, nrec) && g_so[j] && g_so[j]->known); }
 // 1 created, 2 skipped (SoSlot::skipped), 0 failed, -1 left for a new process (ray tracing poisoned), -2 not created: the
 // device was removed or it faulted
 static __declspec(noinline) int replay_one(size_t j, size_t nrec) {
-    if (g_skip.count(j)) return 2;
+    if (g_skip.count(j) || g_known_items.count(j)) return 2;
     if (j == g_remove_item && !g_remove_shared && g_warm_dev5) g_warm_dev5->RemoveDevice();
 #ifdef SCSK_TEST_HOOKS
     if (j >= g_remove_item && j <= g_remove_last && g_remove_shared && !t_alone && g_warm_dev5) return g_warm_dev5->RemoveDevice(), removed(), -2;
@@ -2442,10 +2553,11 @@ static int replay_guarded(size_t j, size_t nrec) {
 static size_t g_retry_from = SIZE_MAX;  // set when the warm ends poisoned with items unfinished
 static uint64_t g_retry_failed;         // failures among the items before g_retry_from (the rest are counted by the retry)
 static std::atomic<uint64_t> g_retry_skipped;  // ...and skips: SCSKiller_Skipped reads it while the warm runs
-// The stuck-worker replacements ran out with the device intact: a new process goes on from the first unfinished item, the
-// hung items skipped for this compile only (never crash keys: a mass hang may be transient).
+// Nine PSOs hung, or the stuck-worker replacements ran out, with the device intact (a mass hang, which may be transient): a new process goes on
+// from the first hung item and creates each hung PSO alone first, and only one that hangs again alone is a culprit.
 static std::atomic<bool> g_hung;
-static std::string g_hung_json;  // SCSKiller_Hung: the hung items at or after g_retry_from, joined by commas
+static std::vector<size_t> g_hung_items;  // the PSOs the supervisor abandoned: culprits, unless the run ends in a mass hang
+static std::string g_alone_skip;  // SCSKiller_Hung: the items that hung alone, joined by commas: a new process skips them
 
 // D3D11 items (warm11.cpp): one draw/dispatch per shader on a D3D11 device on the warm device's adapter.
 struct Dev11;
@@ -2688,12 +2800,16 @@ static void warm_main() {
     g_item_state.open(g_dir + kItemsFile, first, n12, n);
     auto key = [&](size_t j) { return j < nrec ? key_of(g_recs[j].tag, g_recs[j].payload) : key_of('P', g_plan[j - nrec]); };
     HashSet crash_found;
-    if (!g_crash_keys.empty()) {
+    if (!g_crash_keys.empty() || !g_known_keys.empty()) {
         for (size_t j = 0; j < n12; ++j)
             if (Hash k = key(j); g_crash_keys.count(k)) g_crash.insert(j), crash_found.insert(k);
+            else if (g_known_keys.count(k)) g_known_items.insert(j);
         for (size_t k : g_crash)  // what builds on one is skipped instead of created
             if (k < nrec && g_so[k]) std::call_once(g_so[k]->once, [&] { g_so[k]->hr = E_FAIL, g_so[k]->why = "it removed the device in an earlier run", g_so[k]->skipped = g_so[k]->done = true; });
-        logf("warm: %zu items skipped: they removed the device in an earlier run", g_crash.size());
+        for (size_t k : g_known_items)
+            if (k < nrec && g_so[k]) std::call_once(g_so[k]->once, [&] { g_so[k]->hr = E_FAIL, g_so[k]->why = "it crashed or hung this driver in an earlier compile", g_so[k]->skipped = g_so[k]->known = g_so[k]->done = true; });
+        if (!g_crash_keys.empty()) logf("warm: %zu items skipped: they removed the device in an earlier run", g_crash.size());
+        if (!g_known_keys.empty()) logf("warm: %zu items skipped: they crashed or hung this driver in an earlier compile", g_known_items.size());
     }
     wchar_t fault[32] = {};  // SCSKILLER_WARM_FAULT (development): see g_fault_item
     if (env(L"SCSKILLER_WARM_FAULT", fault)) {
@@ -2707,27 +2823,92 @@ static void warm_main() {
         g_remove_item = g_remove_last = _wtoi64(fault), g_remove_shared = wcsstr(fault, L"shared");
         if (const wchar_t* last = wcschr(fault, L'-')) g_remove_last = _wtoi64(last + 1);
     }
-    // In flight when an earlier process's device was removed: each alone, before the workers, so a removal names its item.
-    // ponytail: no supervisor over these few; a create that hangs here stalls the run like a hung driver does anywhere
+    // In flight when an earlier process's device was removed, or hung in an earlier process's mass hang: each alone, before
+    // the workers, so a removal or a hang names its item. Each runs on a thread of its own, given up on as the supervisor
+    // gives up on a stuck worker: one that hangs alone is skipped for this compile and is a culprit, and the run goes on.
+    wchar_t stuck_env[16] = {};  // SCSKILLER_WARM_STUCK_S (development): the per-item limit, default 60 s
+    double stuck_ms = env(L"SCSKILLER_WARM_STUCK_S", stuck_env) ? 1000.0 * _wtoi(stuck_env) : 60000, stuck_stop_ms = 2000;
+    g_stuck_ms = stuck_ms;
+    struct Alone {
+        size_t k;
+        SoClock so;
+        std::atomic<bool> done{false};
+        int ok = 0;
+    };
+    std::vector<Alone*> given_up;  // leaked: their stuck threads may still return into them
     size_t blamed_alone = SIZE_MAX, alone_at = 0;
     t_replay = true;
+    double alone_pass = now_ms();
     for (; alone_at < g_alone.size() && g_state != STOP; ++alone_at) {
         size_t k = g_alone[alone_at];
         if (k < first || k >= n12 || g_crash.count(k) || other_pass(k)) continue;
         while (g_state == PAUSE) Sleep(50);
         g_item_state[k] = kItemInFlight;
-        t_alone = true;
-        int ok = replay_guarded(k, nrec);
-        t_alone = false;
-        if (ok == -2 || removed()) { blamed_alone = k; break; }
+        auto* a = new Alone{k};
+        std::thread t([a, nrec] {
+            SetThreadPriority(GetCurrentThread(), g_prio);
+            t_replay = t_alone = true;
+            t_so_clock = &a->so;
+            a->ok = replay_guarded(a->k, nrec);
+            a->done = true;
+        });
+        const bool so = is_so(k, nrec);
+        const double since = live_pass(alone_pass);
+        size_t creating = SIZE_MAX;
+        auto stuck = [&] {  // as the workers' supervisor judges one, its pass skipping a suspension
+            double now = live_pass(alone_pass);
+            creating = a->so.creating;  // before the segment judged: one it moves past meanwhile blames nothing
+            if (!so) return now - since > (g_state == STOP ? stuck_stop_ms : stuck_ms);
+            auto g = a->so.seg.load();
+            if (g.since > now && a->so.seg.compare_exchange_strong(g, {now, g.limit})) g.since = now;
+            if (g_state == STOP) return now - (g.since ? g.since : since) > stuck_stop_ms;
+            if (g.since) return now - g.since > g.limit;
+            return g_rt_off && now - since > stuck_stop_ms;
+        };
+        while (!a->done && !stuck()) Sleep(20);
+        if (!a->done) {
+            t.detach();
+            given_up.push_back(a);
+            g_abandoned12 = true;
+            if (g_state == STOP) {
+                g_item_state[k] = 3;
+                logf("warm: item %zu, created alone, stopped: left for the resume", k);
+                break;
+            }
+            if (so && (a->so.seg.load().since || !g_rt_off)) rt_stop("a state object create hung alone", k, a->so.creating == creating ? creating : kNoBlame);
+            // a PSO stuck behind a poisoned driver or a removed device is its victim: left for a new process
+            const bool fatal = so ? g_rt_fatal == k : !g_rt_off && !removed();
+            if (fatal && !so) culprit(k);
+            if (fatal) g_alone_skip += (g_alone_skip.empty() ? "" : ",") + std::to_string(k);
+            g_item_state[k] = fatal ? kItemInFlight : g_removed ? 4 : 3;  // 5 once no later item is alone with it (a death names no item then)
+            ++g_work;  // the app's stall watchdog sees the alone items move
+            logf("warm: item %zu, created alone, stuck for %.0f s: %s", k, (live_pass(alone_pass) - since) / 1000,
+                 fatal ? "skipped for this compile, later runs on this driver skip it" : "left for a new process");
+            continue;
+        }
+        t.join();
+        int ok = a->ok;
+        delete a;
+        if (ok == -2 || removed()) {
+            // after a create was given up on, it may have removed the device: then only an exception names its item, else all of
+            // them are created alone again by the next process
+            if (size_t f = g_faulted; f != SIZE_MAX) blamed_alone = f;
+            else if (given_up.empty()) blamed_alone = k;
+            else {
+                g_item_state[k] = 4;
+                for (Alone* u : given_up) g_item_state[u->k] = 4;
+                logf("warm: the device was removed after a create alone was given up on: no item blamed");
+            }
+            break;
+        }
         g_item_state[k] = ok >= 0 ? state_of(ok) : 0;  // counted when a worker takes it
-        logf("warm: item %zu, in flight when the device was removed, created alone: %s", k, ok == 1 ? "ok" : ok == 2 ? "skipped" : ok == 0 ? "failed" : "left");
+        ++g_work;
+        logf("warm: item %zu created alone: %s", k, ok == 1 ? "ok" : ok == 2 ? "skipped" : ok == 0 ? "failed" : "left");
     }
+    for (Alone* u : given_up)
+        if (g_item_state[u->k] == kItemInFlight) g_item_state[u->k] = 5;  // counted when a worker takes it
     if (blamed_alone != SIZE_MAX && g_fault_code) logf("warm: item %zu faulted (0x%08x) alone: later runs skip it", blamed_alone, g_fault_code.load());
     else if (blamed_alone != SIZE_MAX) logf("warm: item %zu removed the device alone: later runs skip it", blamed_alone);
-    wchar_t stuck_env[16] = {};  // SCSKILLER_WARM_STUCK_S (development): the per-item limit, default 60 s
-    double stuck_ms = env(L"SCSKILLER_WARM_STUCK_S", stuck_env) ? 1000.0 * _wtoi(stuck_env) : 60000, stuck_stop_ms = 2000;
-    g_stuck_ms = stuck_ms;
 
     // Workers take items in file order, deferred state objects first once ready. A supervisor (this thread) abandons a worker
     // stuck in one item for over stuck_ms (2 s once stopping: left for the resume), as warm11 does: the item is skipped for this compile, a stuck
@@ -2738,7 +2919,8 @@ static void warm_main() {
         std::thread t;
         std::atomic<double> since{0};       // when its current item started; 0 = between items
         std::atomic<size_t> j{0};
-        std::atomic<bool> claimed{false};  // the current item's outcome is taken: by the worker (counted) or the supervisor (abandoned)
+        std::atomic<uint64_t> claim{1};    // the current item's number << 1, | 1 once its outcome is taken: by the worker (counted) or the supervisor (abandoned)
+        uint64_t items = 0;
         std::atomic<bool> finished{false};
         SoClock so;
     };
@@ -2756,7 +2938,7 @@ static void warm_main() {
         return (j = next++) < n12;
     };
     auto defer = [&](size_t j) {
-        if (!is_so(j, nrec) || g_rt_off || g_item_state[j] || g_crash.count(j) || g_skip.count(j)) return false;
+        if (!is_so(j, nrec) || g_rt_off || g_item_state[j] || g_crash.count(j) || g_skip.count(j) || g_known_items.count(j)) return false;
         for (;;) {
             size_t b = so_blocker(j);
             if (b == SIZE_MAX) return false;
@@ -2786,19 +2968,23 @@ static void warm_main() {
                 }
                 if (other_pass(j)) { --g_active, g_item_state[j] = 1, ++g_warm_other; continue; }
                 if (defer(j)) { --g_active; continue; }
-                w->claimed = false, w->j = j;
+                w->j = j;
                 double t = live_ms();
                 w->since = t;
+                const uint64_t mine = ++w->items << 1;
+                w->claim = mine;
                 bool crash = g_crash.count(j), alone = g_item_state[j];
                 if (!crash && !alone) g_item_state[j] = kItemInFlight;
-                int ok = crash ? 1 : alone ? (g_item_state[j] == 1 ? 1 : g_item_state[j] == 5 ? 2 : 0) : replay_guarded(j, nrec);  // created alone: its outcome
+                const uint8_t was = g_item_state[j];
+                int ok = crash ? 1 : alone ? (was == 1 ? 1 : was == 5 ? 2 : was == 2 ? 0 : -1) : replay_guarded(j, nrec);  // created alone: its outcome, or left for a new process
                 if (g_fault_code && !crash && !alone && ok >= 0) ok = -2;  // in flight at a fault: a suspect, the next process creates it alone
                 w->since = 0;
-                if (w->claimed.exchange(true)) return;  // abandoned meanwhile: counted by the supervisor, its replacement carries on
+                if (uint64_t c = mine; !w->claim.compare_exchange_strong(c, mine | 1)) return;  // abandoned meanwhile: counted by the supervisor, its replacement carries on
                 --g_active;
                 g_item_state[j] = state_of(ok);
                 if (crash) g_warm_crash++;
                 else if (ok >= 0) (ok == 1 ? g_warm_ok : ok == 2 ? g_warm_skipped : g_warm_fail)++;
+                if (ok == 2 && known_skip(j, nrec)) g_warm_known++;
                 if (times) { std::lock_guard l(tmx); fprintf(times, "%zu,%.3f,%d\n", j, live_ms() - t, ok); }
             }
             w->finished = true;
@@ -2822,23 +3008,27 @@ static void warm_main() {
         double now = live_pass(pass);
         for (size_t i = 0; i < ws.size();) {
             Worker12* w = ws[i];
+            uint64_t claim = w->claim;
+            size_t creating = w->so.creating;  // before the segment stuck() judges: one it moved past meanwhile blames nothing
             double since = started(w->since, now);
             if (w->finished) {
                 w->t.join();
                 delete w;
                 ws.erase(ws.begin() + i);
-            } else if (since && stuck(w, since, now) && !w->claimed.exchange(true)) {
+            } else if (!(claim & 1) && since && stuck(w, since, now) && w->claim.compare_exchange_strong(claim, claim | 1)) {
                 size_t j = w->j;
                 bool stopping = g_state == STOP;  // our stop cut the item short, no hang: the resume creates it
                 // short of a poison or a stop only a driver call makes a state object stuck, also one that has just returned
                 bool so = is_so(j, nrec), call = so && (w->so.seg.load().since || !(g_rt_off || stopping));
-                if (call && !stopping) rt_stop("a state object create hung", j);
+                if (call && !stopping) rt_stop("a state object create hung", j, w->so.creating == creating ? creating : kNoBlame);
                 // a PSO stuck behind a poisoned driver or a removed device is its victim: retried too; otherwise it's the PSO's own hang
                 bool fatal = so ? g_rt_fatal == j : !stopping && !g_rt_off && !removed();
                 logf("warm: item %zu (%s) stuck for %.0f s: its worker is abandoned, the item %s", j,
                      !so ? "a PSO" : call ? "a state object" : "a state object waiting on one it builds on", (now - since) / 1000,
                      fatal ? "is skipped for this compile" : "is left for a new process");
                 if (fatal) g_warm_skipped++;
+                if (fatal && !so) g_hung_items.push_back(j);  // a state object's is named by rt_stop
+                if (g_hung_items.size() > 8 && !g_hung.exchange(true)) logf("warm: %zu PSOs hung: a new process goes on, creating each alone first", g_hung_items.size());
                 g_item_state[j] = fatal ? 5 : g_removed ? 4 : 3;
                 g_abandoned12 = true;
                 --g_active;     // its slot: the stuck thread never gives it back
@@ -2857,16 +3047,18 @@ static void warm_main() {
         // leave deferred or abandoned items below others done
         if (g_rt_off || g_removed || g_state == STOP || g_hung) {
             if (size_t k = g_faulted; k != SIZE_MAX) g_item_state[k] = 4;  // a worker the supervisor abandoned on it never writes its state
+            const bool mass = g_hung && !g_rt_off && !g_removed && g_state != STOP;
+            if (mass)
+                for (size_t j : g_hung_items) g_item_state[j] = 4;  // not created: the retry creates them alone first
             size_t from = first;
             while (from < n12 && finished(g_item_state[from])) ++from;
             if (from < n12) {
                 g_retry_failed = std::count(g_item_state.begin() + first, g_item_state.begin() + from, 2);
                 g_retry_skipped = std::count(g_item_state.begin() + first, g_item_state.begin() + from, 5);
+                for (size_t j = first; j < from; ++j) g_retry_known += g_item_state[j] == 5 && known_skip(j, nrec);
                 g_retry_from = from;
-                if (g_hung)
-                    for (size_t j = from; j < n12; ++j)
-                        if (g_item_state[j] == 5 && !g_skip.count(j)) g_hung_json += (g_hung_json.empty() ? "" : ",") + std::to_string(j);
-                if (blamed_alone != SIZE_MAX) {
+                if (mass) g_alone_next = g_hung_items;
+                else if (blamed_alone != SIZE_MAX) {
                     g_blamed = {blamed_alone};
                     for (size_t i = alone_at + 1; i < g_alone.size(); ++i)
                         if (g_alone[i] >= from && g_alone[i] < n12) g_alone_next.push_back(g_alone[i]);
@@ -2905,6 +3097,7 @@ static void warm_main() {
             auto d12 = g_item_state.begin() + std::min(first, n12);
             g_retry_failed = std::count(d12, g_item_state.end(), 2) + g_failed11_below;
             g_retry_skipped = std::count(d12, g_item_state.end(), 5) + g_skipped11_below;
+            for (size_t j = std::min(first, n12); j < n12; ++j) g_retry_known += g_item_state[j] == 5 && known_skip(j, nrec);
             g_retry_from = n12 + g_from11;
             logf("warm11: %s from item %zu", g_hung ? "a new process goes on" : "stopped: the resume goes on", n12 + g_from11);
         }
@@ -2986,6 +3179,12 @@ static void warm_main() {
     }
     for (auto& h : crash_found) g_crash_json += (g_crash_json.empty() ? "\"" : ",\"") + std::string(hex(h).data()) + "\"";
     for (size_t j : g_alone_next) g_alone_json += (g_alone_json.empty() ? "" : ",") + std::to_string(j);
+    {
+        std::lock_guard l(g_culprit_mx);
+        if (!g_hung) g_culprits.insert(g_culprits.end(), g_hung_items.begin(), g_hung_items.end());
+        for (size_t j : g_culprits)
+            if (j < n12) g_culprit_json += (g_culprit_json.empty() ? "\"" : ",\"") + std::string(hex(key(j)).data()) + "\"";
+    }
     if (g_warm_faults >= 3) logf("warm: stopped after repeated faults; the game is unaffected, report scskiller.log");
     if (g_state == STOP) logf("warm: stopped at item %llu of %zu", first + warm_done(), n);
     if (!g_abandoned11 && !g_abandoned12) {  // shader bytes and plan are only needed for the replay
@@ -6035,11 +6234,29 @@ extern "C" void WINAPI SCSKiller_Retry(uint64_t out[5]) {
     memcpy(out, v, sizeof v);
 }
 
-// For scskiller_warm, after the warm finished: whether its retry is for hangs alone (g_hung), and the hung items the next
-// process skips (--skip), joined by commas.
+// For scskiller_warm, after the warm finished: whether its retry is for hangs alone (g_hung), and the items the next process
+// skips (--skip), joined by commas: those that hung alone (a mass hang's are created alone, SCSKiller_Crashes).
 extern "C" BOOL WINAPI SCSKiller_Hung(const char** skip) {
-    *skip = g_hung_json.c_str();
+    *skip = g_alone_skip.c_str();
     return g_hung && !g_rt_off && !g_removed;
+}
+
+// For scskiller_warm, before SCSKiller_StartWarm: the keys (20 bytes each) of items that crashed or hung this driver in an
+// earlier compile (g_known_keys).
+extern "C" void WINAPI SCSKiller_WarmKnown(const uint8_t* keys, uint32_t nkeys) {
+    for (uint32_t i = 0; i < nkeys; ++i) {
+        Hash h;
+        memcpy(h.data(), keys + 20 * i, 20);
+        g_known_keys.insert(h);
+    }
+}
+
+// For scskiller_warm, after the warm finished: {of the skipped, g_known_items and what builds on them, those among the items
+// before the retry's first}; the keys of this run's items that hung or faulted the driver themselves, as JSON strings
+// joined by commas.
+extern "C" void WINAPI SCSKiller_Known(uint64_t out[2], const char** culprits) {
+    out[0] = g_warm_known, out[1] = g_retry_known;
+    *culprits = g_culprit_json.c_str();
 }
 
 // For scskiller_warm, never blocks: {skipped for this compile (SoSlot::skipped), those among the items before the retry's first}.
@@ -6049,6 +6266,28 @@ extern "C" void WINAPI SCSKiller_Skipped(uint64_t out[2]) {
 
 // For scskiller_warm, never blocks: {done (items before the start offset count as done), total, failed, warm finished}.
 extern "C" uint64_t WINAPI SCSKiller_Work() { return g_work + g_released; }  // the parked state objects' release at the end too
+
+using ScAdd = INT_PTR(WINAPI*)(INT_PTR, INT_PTR, INT_PTR, INT_PTR, INT_PTR, INT_PTR, INT_PTR, INT_PTR);
+static ScAdd o_sc_add[2];
+template <int I>
+static INT_PTR WINAPI hk_sc_add(INT_PTR a, INT_PTR b, INT_PTR c, INT_PTR d, INT_PTR e, INT_PTR f, INT_PTR g, INT_PTR h) {
+    ++t_cache_adds;
+    return o_sc_add[I](a, b, c, d, e, f, g, h);
+}
+
+// For scskiller_warm, before its device: counts the pipelines created without a compile stored (SCSKiller_Cached). False
+// when d3dscache.dll's stores can't be hooked: then nothing is counted.
+extern "C" BOOL WINAPI SCSKiller_CountCached() {
+    HMODULE m = LoadLibraryExW(L"d3dscache.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    void* add = m ? (void*)GetProcAddress(m, "ShaderCache_AddValue") : nullptr;
+    void* add1 = m ? (void*)GetProcAddress(m, "ShaderCache_AddValue1") : nullptr;
+    if (!add || !hook_fn(add, (void*)hk_sc_add<0>, (void**)&o_sc_add[0])) return FALSE;
+    if (add1 && !hook_fn(add1, (void*)hk_sc_add<1>, (void**)&o_sc_add[1])) return FALSE;
+    g_count_cached = true;
+    return TRUE;
+}
+
+extern "C" uint64_t WINAPI SCSKiller_Cached() { return g_warm_cached; }
 
 extern "C" void WINAPI SCSKiller_Progress(uint64_t out[4]) {
     uint64_t v[4] = {std::min(g_start, g_total) + warm_done(), g_total, g_warm_fail, WaitForSingleObject(g_warm_done, 0) == WAIT_OBJECT_0};

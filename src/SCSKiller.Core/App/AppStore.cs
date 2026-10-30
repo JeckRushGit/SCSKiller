@@ -19,6 +19,8 @@ public sealed class GameRecord
     public DateTimeOffset? PlanBuiltAt { get; set; }
     public int PlanVersion { get; set; }                     // Planner.Version the plan was built with
     public int WarmedPlanVersion { get; set; }               // PlanVersion of the plan the last complete warm replayed
+    public int PlanCheckFailed { get; set; }                 // Planner.Version a background plan check failed at: not retried by itself; 0 = none
+    public string? IndexFailedStamp { get; set; }            // ExeStamp of the build a recorder's background index failed on: not read again until it changes
     public int? PlanReaderVersion { get; set; }              // IEngineReader.ReaderVersion of the index the plan was built from; null = 1
     public int? WarmedReaderVersion { get; set; }            // PlanReaderVersion of the plan the last complete warm replayed
     public string? PlanRules { get; set; }                   // RulesFile.Hash of the rules the plan was built with; null = the embedded rules
@@ -33,6 +35,7 @@ public sealed class GameRecord
     public bool PlanPerStage { get; set; }                  // the plan has each stage unit once, not every pairing (per-stage cache, not Maximum)
     public bool? PlanMaximumCapped { get; set; }            // the plan was built with Maximum's per-game cap (PlanBuilder.MaximumExtras); null = before it
     public bool WarmedPerStage { get; set; }                // PlanPerStage of the plan the last complete warm replayed
+    public string? WarmedDelivery { get; set; }             // the game's Advanced Shader Delivery the last complete warm left out (D3DSCache.Delivery.Stamp); null = none
     public string? PlanMiddleware { get; set; }             // MiddlewarePacks.Fingerprint when the plan was built (DLL versions + pack sizes)
     public string? PlanCommunity { get; set; }              // the community recording (object id) the plan was built with; null = none
     public string? PlanOfficial { get; set; }               // the official recording (object id) the plan was built with; null = none
@@ -43,10 +46,13 @@ public sealed class GameRecord
     public Dictionary<string, long>? WarmedD3DSCacheBytes { get; set; }   // NVIDIA: the game's D3DSCache dbs and their lengths after that warm's fold; null = not recorded
     public DateTimeOffset? WarmedD3DSCacheAt { get; set; }  // ...when they were read: a db made after it holds none of the warm's
     public string? D3DSCacheMade { get; set; }              // the D3DSCache folder SCSKiller made before the game's first run
+    public string? D3DSCacheLinked { get; set; }            // why the last fold didn't follow the game's linked D3DSCache folder, for the game page
+    public Dictionary<string, string>? D3DSCacheRefused { get; set; }   // staged or waiting folder -> both folders' db stamps and why the last merge refused it
+    public string? TrimmedLogged { get; set; }              // the trimmed cache reason app.log last reported: once per eviction, not per start
     public DateTime? D3DSCacheSince { get; set; }           // staged warms' runtime cache folders made since then aren't folded yet
     public bool D3DSCacheStrandChecked { get; set; }        // AdoptStranded looked once for a 1.3.1 warm's unfolded staged folders
     public bool D3DSCacheDamaged { get; set; }              // a staged db failed SQLite's check at the fold: compile again
-    public Dictionary<string, string>? D3DSCacheChecked { get; set; }   // the game's D3DSCache dbs by path as the last fold checked or wrote them (D3DSCache.CheckStamp)
+    public Dictionary<string, string>? D3DSCacheChecked { get; set; }   // the game's D3DSCache dbs by path as the last fold checked or wrote them (D3DSCache.CheckStamp), a refused identity under "<path>|identity"
     public IdentityStamp? D3DSCacheStamp { get; set; }      // the identity the last fold that put dbs in stamped, and why (outcome reports)
     public DateTimeOffset? D3DSCacheStampAt { get; set; }   // ...when
     public string? D3DSCacheStampFolder { get; set; }       // ...in which D3DSCache folder (a made one before the game named it)
@@ -61,10 +67,13 @@ public sealed class GameRecord
     public double ResumeSeconds { get; set; }                // ...and their time: a complete warm's time and rate include them
     public long ResumeFailed { get; set; }                   // ...and their failures: a resumed warm counts only its own
     public long ResumeDriverSkipped { get; set; }            // ...and their skips (WarmResult.DriverSkipped)
+    public long ResumeKnown { get; set; }                    // ...of those, the known ones (WarmResult.Known)
     public string? ResumeGpu { get; set; }                   // ...on this driver (ScsKiller.DriverId): another one's cache lacks them; null = unknown, as another
     public string? ResumeLayer { get; set; }                 // ...through this ReShade layer (ReShadeInstall.Fingerprint); null = none
     public string? ResumeExe { get; set; }                   // ...staged as this exe name (another name's cache lacks them); null = unknown, as another
+    public string? ResumeStopped { get; set; }               // ...leaving out these of ScsKiller.StoppedFile's PSOs (ScsKiller.KeysHash); null = none
     public string? ResumeAgs { get; set; }                   // ...registering this AGS app name ("" = none; another name's cache lacks them); null = an earlier build's
+    public string? ResumeDelivery { get; set; }              // ...leaving out what this Advanced Shader Delivery served (D3DSCache.Delivery.Stamp); null = none
     public bool ResumeAftermath { get; set; }                // ...starting NVIDIA Aftermath as the game does (its shader debug info is another key)
     public bool ResumeLeftOut { get; set; }                  // ...leaving out what earlier warms compiled (CompiledItems): its item numbers count in that set
     public long ResumeSkipEnd { get; set; }                  // where the window the last give-up skipped ends (ScsKiller.GiveUpSkip)...
@@ -78,17 +87,23 @@ public sealed class GameRecord
     public long? LastWarmSkipped { get; set; }               // ...and PSOs skipped: a shader not in this install (never replayed)
     public long? LastWarmNeedsRecording { get; set; }        // ...of those, flagged by the community recording: only a recording here has them
     public long? LastWarmCrashed { get; set; }               // ...and items skipped because they crash the GPU driver
+    public long? LastWarmCrashedBefore { get; set; }         // ...of those, the crash keys an earlier compile on this driver found
     public long? LastWarmDriverSkipped { get; set; }         // ...and items skipped for that compile (WarmResult.DriverSkipped)
+    public long? LastWarmKnown { get; set; }                 // ...of those, the ones that crashed this driver before (WarmResult.Known)
     public long? LastWarmUnbuilt { get; set; }               // ...and D3D11 items SCSKiller can't build a draw for yet (ScsKiller.Unbuilt11)
+    public long? LastWarmTried { get; set; }                 // ...of the items it replayed (WarmResult.Total: what earlier compiles created is left out)
+    public int? LastWarmFailedBy { get; set; }               // ...what most of its failures were (ScsKiller.TopFailKind); null = not known
     public HashSet<string> CrashKeys { get; set; } = [];     // record keys of items whose create removed the D3D12 device or faulted in the driver: every warm skips them
-    public string? CrashKeysDriver { get; set; }             // the driver they crashed (ScsKiller.DriverId): a warm on another driver creates each alone first, the first that still crashes keeps them all
+    public string? CrashKeysDriver { get; set; }             // the driver they crashed (ScsKiller.DriverId): another driver's are dropped at its first compile, which tries them again
+    public HashSet<string> KnownKeys { get; set; } = [];     // record keys of items that hung or faulted KnownKeysDriver (WarmResult.Culprits): its warms skip them, at most ScsKiller.MaxKnownKeys
+    public string? KnownKeysDriver { get; set; }             // ScsKiller.DriverId: another driver's are dropped at its first compile, which tries them again
     public string? WarmedIndexHash { get; set; }
     public string? WarmedExeStamp { get; set; }             // exe size + write time at the warm: a game patch changes it
     public string? WarmedGameVersion { get; set; }          // Game.Version (store build id) at the warm; preferred over the exe stamp
     public string? WarmedLayer { get; set; }                // the ReShade layer the warm ran through (ReShadeInstall.Fingerprint); null = none
     public string? WarmedIndexStamp { get; set; }           // IEngineReader.IndexStamp when the warm's index was taken; null = ""
     public double? BytesPerPso { get; set; }                // measured by the last complete warm onto a cold cache (ScsKiller.ColdWarm)
-    public double? PsoPerSecond { get; set; }               // ...and this
+    public double? PsoPerSecond { get; set; }               // ...and this, or a stopped one's until a warm completes
     public string? PsoPerSecondDriver { get; set; }         // the driver it was measured on (GpuSnapshot.Id); null = WarmedDriverId
     public DateTimeOffset? RecordingImportedAt { get; set; }  // when an import last added records
     public string? RecordingInbox { get; set; }             // the game folder's scskiller.db (size:write ticks) when last imported
@@ -115,6 +130,8 @@ public sealed class GameRecord
     public bool RecorderClaimed { get; set; }                // taken over from another copy: its recorder is replaced by this build's, even a newer build's
     public string? RecorderFailure { get; set; }             // the last install or update's failure as the game page shows it (ScsKiller.InstallFailed); null = none
     public bool OfflineRecord { get; set; }                  // opt-in: offline sessions without EasyAntiCheat may be started (Games.OfflineEac)
+    public bool AlwaysRecord { get; set; }                   // opt-in: every launch records as a confirmed risk session would (ScsKiller.SetAlwaysRecord)
+    public AntiCheat AlwaysRecordShown { get; set; }         // ...the anti-cheat the user confirmed it with: another one found turns it off
     public OfflineSession? OfflineSession { get; set; }      // one was started and its folder isn't back to how it was yet
     public bool KeysPending { get; set; }                    // the keys file wasn't rewritten while the game ran: the next refresh or reconcile does
     public HashSet<string> CacheKeys { get; set; } = [];     // driver-cache application keys seen open by this game's warms or the game (IAppCache)
@@ -149,6 +166,7 @@ public sealed class GameRecord
     public bool PlanRayTracing { get; set; } = true;        // the plan was built with them (ScsKiller.RayTracing); true for a record from before the setting
     public bool WarmedRayTracing { get; set; } = true;      // PlanRayTracing of the plan the last complete warm replayed
     public bool WarmedCareful { get; set; }                 // the last complete warm was careful
+    public StoppedCreated? StoppedCreated { get; set; }     // what stopped or failed compiles created (ScsKiller.StoppedFile) was for this; null = none on record
     public LaunchCheck? FirstLaunch { get; set; }           // the game's first launch after the last complete warm (AMD, NVIDIA); null = not yet
     public DateTimeOffset? UnreachedWarm { get; set; }      // NVIDIA: the WarmedAt of a warm that launch showed the game's lookups miss (ScsKiller.IsUnreached)
     public DateTimeOffset? UnreachedRecheckedAt { get; set; }   // the start of the last later launch judged against that verdict; null = none since
@@ -199,6 +217,14 @@ public sealed record ShippingPick(string Named, string? Stamp, string Exe);
 /// <summary>A run of the game as the app's watcher saw it: not running at <paramref name="From"/>, last seen running at
 /// <paramref name="To"/> (both within a poll of the real start and exit).</summary>
 public sealed record PlayWindow(DateTimeOffset From, DateTimeOffset To);
+
+/// <summary>What stopped or failed compiles' created PSOs (<see cref="ScsKiller.StoppedFile"/>) went into: the driver (ScsKiller.DriverId),
+/// the game's shaders (ShaderIndex.ContentHash), and the staged exe name, layer (ReShadeInstall.Fingerprint) and AGS app ("" = none),
+/// each in the cache's key. Only compiles without NVIDIA Aftermath or Advanced Shader Delivery keep one. <paramref name="Bytes"/>:
+/// the game's D3DSCache dbs' lengths at <paramref name="At"/>, when a fold put every staged db in (<paramref name="Folded"/>);
+/// before the last stop's fold, the earlier fold's, which that fold checks before it takes the new ones.</summary>
+public sealed record StoppedCreated(string Driver, string Index, string Exe, string? Layer, string Ags,
+    IReadOnlyDictionary<string, long>? Bytes = null, DateTimeOffset? At = null, bool Folded = false);
 
 /// <summary>A launch's driver creates from the recorder's csv (<see cref="SessionLog"/>): cache hits and compiles, started at
 /// <paramref name="At"/>.</summary>

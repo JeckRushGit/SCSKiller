@@ -70,7 +70,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         var s = Survey(paks, eg, project, null);
         var keyNote = "";
         FAesKey? key = null;
-        if (newer == null && s.Libraries.Count == 0 && s.Encrypted.Count > 0)
+        if (newer == null && s.Encrypted.Count > 0)
         {
             using (var check = new KeyCheck(s.Encrypted, eg)) key = keys.Get(game, check.Opens, out keyNote);
             if (key != null) s = Survey(paks, eg, project, key);
@@ -80,7 +80,8 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         else if (newer == null && fork == null && baseGame == EGame.GAME_UE5_5 && HasVerseCells(paks, key)) baseGame = EGame.GAME_UE5_6;
         if (newer == null && fork == null && RegistryEngine(s.Registry) is { } r && r != baseGame) guessed = true; // the registry names another version
         ReleaseMemory();
-        var encrypted = newer == null && s.Libraries.Count == 0 && s.Encrypted.Count > 0;
+        var encrypted = newer == null && key == null && s.Libraries.Count == 0 && s.Encrypted.Count > 0;
+        var keyMissing = newer == null && !encrypted && key == null && s.Encrypted.Count > 0;
         var platforms = s.Libraries.Count > 0 ? s.Libraries : s.Globals; // no libraries: the shaders are inside the packages
         var unsupported = newer != null ? $"Unreal {newer} isn't supported yet"
             : encrypted ? $"encrypted game files (needs the game's AES key{(UnrealKeys.Protector(game.ExePath) is { } by ? $"; its exe is protected ({by}), so SCSKiller can't read the key from it" : "")})"
@@ -96,7 +97,8 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
         var rtOff = UnrealRhi.RayTracingOff(s.Configs, project, userDir, launch);
         return new EngineInfo("Unreal", version, fork?.ToString(), api, encrypted, unsupported, rtOff || UnrealRhi.RtPipelinesOff(s.Configs, project), rtOff,
             false, guessed, apiGuessed,
-            MaxAnisotropy: UnrealRhi.MaxAnisotropy(version.StartsWith('4') ? 4 : 5, s.Configs, project, userDir, launch));
+            MaxAnisotropy: UnrealRhi.MaxAnisotropy(version.StartsWith('4') ? 4 : 5, s.Configs, project, userDir, launch),
+            KeyMissing: keyMissing, Game: game.Id);   // a rule may name the game (RuleMatch.Games), any build
     }
 
     /// <summary>The engine loads Aftermath from Engine\Binaries\ThirdParty\NVIDIA\NVaftermath (some games in a version folder below it).</summary>
@@ -206,7 +208,7 @@ public sealed partial class UnrealReader(string? dataDir = null) : IEngineReader
     static AbstractAesVfsReader OpenContainer(string path, VersionContainer versions)
     {
         AbstractAesVfsReader r = path.EndsWith(".utoc", StringComparison.OrdinalIgnoreCase)
-            ? new IoStoreReader(path, EIoStoreTocReadOptions.ReadDirectoryIndex, versions) : new PakFileReader(path, versions);
+            ? !Sane(path) ? throw new InvalidDataException("a .utoc header whose counts don't fit the file") : new IoStoreReader(path, EIoStoreTocReadOptions.ReadDirectoryIndex, versions) : new PakFileReader(path, versions);
         if (versions.Game != EGame.GAME_MarvelRivals || r is not IoStoreReader) r.CustomEncryption = Decryption(versions.Game);
         return r;
     }

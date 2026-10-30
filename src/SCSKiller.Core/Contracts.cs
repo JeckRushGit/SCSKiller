@@ -32,7 +32,8 @@ public sealed record EngineInfo(
     string? Game = null,                  // "<Game.Id>[@<Game.Version>]", for an engine whose root-signature rule is one game's (Nixxes ports: RuleMatch.Games)
     int? MaxAnisotropy = null,            // the player's texture filtering from the game's config (Unreal: UnrealRhi.MaxAnisotropy); null = not known
     string? Note = null,                  // a line for the game page about what the compile leaves out (FromSoftware: an archive no key opens)
-    bool AftermathOff = false);           // not set or read, as AftermathShaderDebug
+    bool AftermathOff = false,            // not set or read, as AftermathShaderDebug
+    bool KeyMissing = false);             // some game files stay encrypted, no key SCSKiller has opens them: the rest compiles, the user can add the key (Unreal: AES)
 
 /// <summary>Shader stage, numbered like D3D12_PIPELINE_STATE_SUBOBJECT_TYPE (the proxy's db uses the same numbers).</summary>
 public enum Stage { Vertex = 1, Pixel = 2, Domain = 3, Hull = 4, Geometry = 5, Compute = 6, Amplification = 24, Mesh = 25, Library = 100 }
@@ -202,6 +203,9 @@ public sealed record Recording(string DbPath)
     /// <summary>This PC's recorded texture filtering settings (sampler sets, hex), last recorded first
     /// (<see cref="Planning.SamplerVariants.Ordered"/>), and how many of them a plan compiles; null: every one the recording has.</summary>
     public (IReadOnlyList<string> Sets, int Keep)? Filtering { get; init; }
+    /// <summary>The recorded pipelines left out as another GPU vendor's (<see cref="Planning.Planner.OtherVendors"/>): the rule
+    /// rebuilt each one's root signature for that vendor, so they count for its check.</summary>
+    public int OtherVendors { get; init; }
 }
 
 public enum Readiness { Ready, NeedsRecording, Unsupported }
@@ -255,8 +259,9 @@ public sealed record WarmOptions(int Threads, WarmPriority Priority, long StartA
     int MemoryMB = 0,    // the staged warm process's private memory budget (scskiller_warm --memory-mb); 0 = none
     IReadOnlyCollection<string>? SkipKeys = null,   // record keys of items that crashed the GPU driver before: never replayed
     int CarefulThreads = 0,    // a careful warm's passes (a pass file in the work folder): their threads; 0 = Threads
-    IReadOnlyDictionary<string, long>? Probe = null,   // record keys of items that crashed another driver, by item: each created alone first, the first that crashes again skips them all
-    bool D3DSCacheNoFlush = false);   // NVIDIA from 621: the warm skips d3dscache.dll's flushes while it creates (scskiller_warm --d3dscache-noflush)
+    bool D3DSCacheNoFlush = false,   // NVIDIA from 621: the warm skips d3dscache.dll's flushes while it creates (scskiller_warm --d3dscache-noflush)
+    string? Delivery = null,    // the game's Advanced Shader Delivery (D3DSCache.Delivery.Stamp) the warm leaves out, only while it is still that one; null = none
+    IReadOnlyCollection<string>? KnownKeys = null);   // record keys of items that crashed or hung this driver in an earlier compile: skipped, counted in WarmResult.Known
 /// <param name="Failed">PSOs the driver rejected (only that: one naming a shader this install lacks is never replayed)</param>
 /// <param name="Skipped">PSOs of the plan / recording not replayed because a shader is not in this install (another game
 /// build, built at run time, a middleware DLL without it); not in <paramref name="Total"/>. Set by the app from
@@ -275,9 +280,16 @@ public enum WarmOutcome { Completed, Stopped, Failed }
 /// compile that skips them.</param>
 /// <param name="Resumable">a Failed warm that stopped at a clean point (it gave up on device removals or hangs): Done is where the
 /// next compile goes on</param>
+/// <param name="Cached">D3D12 pipelines created without a compile stored, counted only while the game's Advanced Shader
+/// Delivery is registered for the compile: the delivery served them. In Done.</param>
+/// <param name="Known">of DriverSkipped, the items of <see cref="WarmOptions.KnownKeys"/> and the state objects built on one</param>
+/// <param name="Culprits">record keys of the items this compile skipped for hanging or faulting the driver (or its process
+/// dying on them alone), not what builds on them; null = none</param>
 public sealed record WarmResult(WarmOutcome Outcome, long Done, long Total, long Failed, TimeSpan Elapsed, long CacheGrowthBytes, string LogPath, string? Error,
     long Skipped = 0, IReadOnlyCollection<string>? Crashed = null, long DriverSkipped = 0, bool Resumable = false, bool AftermathDropped = false,
-    bool D3DSCacheNoFlush = false);   // the warm's last process skipped d3dscache.dll's flushes (WarmOptions.D3DSCacheNoFlush and its hook went in)
+    bool D3DSCacheNoFlush = false,   // the warm's last process skipped d3dscache.dll's flushes (WarmOptions.D3DSCacheNoFlush and its hook went in)
+    long Cached = 0, long Known = 0, IReadOnlyCollection<string>? Culprits = null,
+    bool Unnamed = false);   // a process died or was ended: what it didn't create is in no failed-keys file
 
 public interface IWarmRun
 {
@@ -331,13 +343,15 @@ public sealed record GameState(
     bool RecordAlongsideMod = false,  // the user chose to record alongside it (IScsKiller.SetRecordAlongsideMod)
     long? LastWarmNeedsRecording = null,   // of LastWarmSkipped, those the community recording flags as built at run time or by a mod
     long? LastWarmCrashed = null,   // the last complete warm: items skipped because they crash the GPU driver
+    long? LastWarmCrashedBefore = null,   // ...of those, the crash keys an earlier compile on this driver found
     long? LastWarmDriverSkipped = null,   // ...and items it skipped for that compile (WarmResult.DriverSkipped)
+    long? LastWarmKnown = null,           // ...of those, the ones that crashed this driver before (WarmResult.Known)
     CarefulCompile? Careful = null,        // AMD's careful compile (ScsKiller.CarefulThreads); null = not this vendor's
     long RecordingBytes = 0,        // the recorder's data files in the game folder plus SCSKiller's copy of its recording
     bool RecordingPaused = false,   // the recorder is in and its recording reached Settings.RecordingLimitMB: no new records
     long RecordedSinceWarm = 0,     // pipelines its recordings and packs have that the last complete warm didn't compile, apart from NewPipelines (derived)
     int CommunityDbPsos = 0,        // the manifest entry's pipelines while InCommunityDb
-    double? PsoPerSecond = null,   // the game's last complete warm onto a cold cache (ScsKiller.ColdWarm); null = none measured
+    double? PsoPerSecond = null,   // the game's last complete warm onto a cold cache (ScsKiller.ColdWarm), or a stopped one's until one completes; null = none measured
     FrameReport? LastFrames = null,    // the last launch's frame times (FrameLog); null = none measured
     bool ReShade = false,              // ReShade next to the game (Games.ReShade.Detect), with or without a ShaderMod
     string? ShaderMod = null,          // a ReShade add-on that changes the game's pipelines (Games.ReShade.Detect); null = none
@@ -359,7 +373,8 @@ public sealed record GameState(
     bool RecordedEnough = false,       // GameRecord.RecordedLong: asking for "5 minutes" again says nothing
     bool OfflineEligible = false,      // an EasyAntiCheat game of Games.OfflineEac on D3D12: an offline session may be offered
     bool OfflineRecord = false,        // the user allowed offline sessions for it (IScsKiller.SetOfflineRecording)
-    bool OfflineRunning = false,       // a session SCSKiller started runs, or its files aren't out of the game folder yet
+    bool OfflineRunning = false,       // a session SCSKiller started runs, or its files aren't out of the game folder yet (not one waiting for an Always record launch)
+    bool AlwaysRecord = false,         // RiskEligible with "Always record" on (IScsKiller.SetAlwaysRecord): every launch records as a confirmed session would
     CommunityInfo? Official = null,    // the maintainer's official recording in use (ScsKiller.OfficialAllowed); null = none
     string? NoStutter = null,          // why it has no shader stutter (Games.GameVerdicts); null = not listed, or KnownStutter is
     bool CompileUnreached = false,     // NVIDIA: the warm's pipelines didn't serve the game (ScsKiller.IsUnreached): never queued but by hand
@@ -380,6 +395,8 @@ public sealed record GameState(
     BeforeAfterInfo? BeforeAfter = null,   // a before and after recording in progress or done (GameRecord.BeforeAfter); null = none
     KeptCache? Kept = null,   // AMD: its compiled cache kept aside (Settings.KeepCachesAside); null = none kept
     long? LastWarmUnbuilt = null,   // the last complete warm: D3D11 items SCSKiller can't build a draw for yet (ScsKiller.Unbuilt11)
+    long? LastWarmTried = null,     // ...of the items it replayed (GameRecord.LastWarmTried); null = not known
+    int? LastWarmFailedBy = null,   // ...what most of its failures were (ScsKiller.TopFailKind); null = not known
     bool Dxvk = false,              // DXVK as its d3d11.dll or dxgi.dll (Games.ReShade.Dxvk): it runs on Vulkan, a compile isn't used
     bool DxvkCompiled = false,      // ... except DXVK's d3d11.dll on NVIDIA: the warm runs through it (Warmer.DxvkDll)
     long? WindowsCache = null,   // NVIDIA from 621: the bytes of its own D3DSCache folders on record, not in CacheOnDisk; null = none
@@ -655,6 +672,11 @@ public interface IScsKiller
     /// <see cref="GameState.RiskEligible"/> with its switch on and not running, and a fresh full check still finds
     /// <paramref name="shown"/>. The task ends once the game exited and its folder is back to how it was.</summary>
     Task StartRiskSession(string gameId, bool confirmed, AntiCheat shown);
+    /// <summary>"Always record" for a <see cref="GameState.RiskEligible"/> game with its switch on: on (once the user confirmed
+    /// <paramref name="shown"/>, and a fresh full check still finds it), SCSKiller keeps a session ready while it runs and
+    /// binds the game's next launch, again after each one; off takes out the waiting session's files, a running one's at
+    /// its end. Throws InvalidOperationException for an unconfirmed or ineligible game.</summary>
+    void SetAlwaysRecord(string gameId, bool on, bool confirmed, AntiCheat shown);
     /// <summary>A running game's folder is left alone: call again when it exits. Null = every game.</summary>
     void ReconcileRecorders(string? gameId = null);
     /// <summary>What adding the exe would add, nothing saved: the resolved exe (where the recorder goes) and the suggested game

@@ -48,7 +48,7 @@ public static class Format
     public static string Engine(EngineInfo e, string? family = null) =>
         e.Version is "" or "-" or "?" ? family ?? e.Family : $"{family ?? e.Family} {e.Version}";
 
-    public const string MergingStage = "Copying the cache to the game's folder";
+    public const string MergingStage = "Handing the compile to the game's cache";
     public const string SavingStage = "Saving the driver's cache";
     public const string FinishingStage = "Finishing up";
 
@@ -127,6 +127,7 @@ public static class Format
             GameStatus.Ready when Has("ray-traced effects aren't compiled") => !s.AnyAntiCheat || s.RiskEligible ? "Ray tracing not compiled" : $"Ray tracing blocked by {ScsKiller.AntiCheatName(s)}",
             GameStatus.Ready when Has(ScsKiller.RtUnseenNote) => "No ray tracing seen while recording",
             GameStatus.Ready when Has(ScsKiller.RtInlineNote) => "Path tracing needs a recording",
+            GameStatus.Ready when s.Engine?.KeyMissing == true => Sentence(ScsKiller.KeyForFullCoverage),
             GameStatus.Ready when ScsKiller.IsPartial(s.Plan) => "Partly covered",
             GameStatus.Ready when Has(Planning.Planner.UntestedNote) => "Not tested on this engine version",
             GameStatus.Ready when Has("for DirectX 12, ") => !s.AnyAntiCheat || s.RiskEligible ? "DirectX 11, DirectX 12 needs a recording" : $"DirectX 11, DirectX 12 blocked by {ScsKiller.AntiCheatName(s)}",
@@ -172,7 +173,10 @@ public static class Format
         : r.StartsWith("Maximum mode", StringComparison.Ordinal) ? "Maximum mode: more to compile"
         : Sentence(FirstClause(r));   // "N new pipelines recorded"
 
-    static string FirstClause(string t) => t.Split([": ", "; ", " ("], 2, StringSplitOptions.None)[0];
-    static string Sentence(string t) => t.Length > 0 ? char.ToUpperInvariant(t[0]) + t[1..] : t;
+    static string FirstClause(string t) => ClauseEnd.Split(t, 2)[0];
+
+    // a joined clause starts uppercase (Then), so ". " before a lowercase letter ("e.g. x") isn't a clause end
+    static readonly System.Text.RegularExpressions.Regex ClauseEnd = new(@": |; | \(|\. (?!\p{Ll})");
+    internal static string Sentence(string t) => t.Length > 0 ? char.ToUpperInvariant(t[0]) + t[1..] : t;
     static string InDb(string reason) => reason.Contains(ScsKiller.InDbSupportersNote, StringComparison.Ordinal) ? ScsKiller.InDbSupportersNote : ScsKiller.InDbNote;
 }

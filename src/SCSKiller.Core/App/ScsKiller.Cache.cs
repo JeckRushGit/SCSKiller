@@ -53,6 +53,9 @@ public sealed partial class ScsKiller
     /// or the session-wide compile mutex (<see cref="Busy"/>). Replaceable for tests: other tests hold that mutex.</summary>
     public Func<bool>? CompileRunning { get; set; }
 
+    /// <summary>This process's queue item runs and hasn't shown Done: a failed or stopped one still stops its warm and folds.</summary>
+    bool ItemRunning { get { lock (_lock) return _current is { } c && (_queue.FirstOrDefault(q => q.GameId == c) is not { } q || q.Stage != QueueStage.Done); } }
+
     /// <summary>Exists while a Cache page delete runs: no compile starts meanwhile (<see cref="HoldForCompile"/>).</summary>
     public static string DeletingName => @"Local\SCSKiller.CacheDelete" + Busy.Scope;
 
@@ -330,7 +333,8 @@ public sealed partial class ScsKiller
     {
         // held for the whole delete: a compile worker in any process checks it after taking its own hold, and this checks after
         using var deleting = Busy.Hold(DeletingName);
-        if ((CompileRunning ?? (() => Compiling || Busy.IsHeld()))())
+        // an item past Done still refreshes its game under our Busy hold, which isn't another process's compile
+        if ((CompileRunning ?? (() => ItemRunning || !Compiling && Busy.IsHeld()))())
             throw new InvalidOperationException("a compile is in progress: delete caches once it has finished");
         var skipped = new List<string>();
         long bytes = 0;

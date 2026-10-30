@@ -9,6 +9,64 @@ All notable changes to the SCSKiller app and command line. Versions follow [Sema
 - ACE COMBAT 7: SKIES UNKNOWN compiles its materials' shaders (about 34,000) instead of only the engine's global ones,
   which made a cache of about 16 MB. Compile it again to include them.
 
+## [1.3.4] - 2026-10-27
+
+**New**
+
+- For games with Advanced Shader Delivery, the compile will skip the shaders Windows already delivered and compile only
+  the rest.
+- The Library will show what SCSKiller checks by itself after an update, those checks will use at most a quarter of the
+  RAM up to 8 GB, a compile you start will no longer wait for them, and a check that can't finish will keep the game's
+  plan and no longer run again at every start.
+- Games with anti-cheat will get an "Always record" switch that records every launch after you confirm it once, at your
+  own risk.
+- The recorder will check a game's steam_appid.txt for VAC, and a game whose steam_appid.txt names an app Steam doesn't
+  know will offer a recording session at your own risk.
+- Settings will offer the same shader cache sizes as the NVIDIA app, from 512 MB to Unlimited.
+
+**Improved**
+
+- A Plague Tale: Requiem will compile every shader combination found in its files instead of about 97%.
+- The RE4 Chainsaw Demo will compile from its own root signatures on AMD.
+- While SCSKiller hands a finished compile to the game's cache, the Library and the game's page will show its progress
+  ("Handing the compile to the game's cache: N%"). Clear cache will stop it first instead of failing with files in use.
+- A game's page will say why pipelines couldn't be compiled, and a problem report will list the top reasons.
+- A pipeline that crashed or hung the GPU driver will stay skipped on later compiles until the driver changes, and a
+  pipeline that hangs before the compile's workers start will no longer stall the compile.
+- Compile progress will keep its total after a driver crash or hang, clear the retry note once the compile is past it,
+  and estimate the time left from a stopped compile until one completes.
+- Unreal Engine 5.8 games such as Fortnite will compile their compute shaders that use NVIDIA's extensions the way the
+  game creates them, so those will no longer compile during play on NVIDIA.
+- On NVIDIA, the pipelines a stopped or failed compile created will no longer be compiled again after the game's plan
+  changes or SCSKiller updates.
+- The cache hand-off after a game session will read the game's whole cache only once a week instead of every time.
+
+**Fixed**
+
+- Unreal Engine games with a recording will compile all their pipelines again, instead of leaving out a large part of
+  them on NVIDIA. The affected games will compile once more after the update.
+- A game's coverage will show what its last compile covers, and pipelines found since then will only be counted in the
+  line that offers to compile them, instead of lowering the percentage.
+- The Shader layouts row will no longer say DirectX 11 for a DirectX 12 game that compiles from its recordings.
+- Resident Evil Requiem (demo) will compile the pipelines its game creates on NVIDIA, also from a shared recording made
+  on another GPU.
+- Pipelines whose pixel shader sets the stencil reference will no longer be compiled on NVIDIA, where they always fail.
+- Resident Evil Requiem (demo) and Dragon's Dogma 2 Character Creator will compile most of their pipelines instead of
+  about a third.
+- DLSS games on NVIDIA whose exe loads none of winmm, version or dinput8, such as Dying Light: The Beast, will be
+  recorded, and no game will show Not supported because of DLSS.
+- An Unreal game whose files are only partly readable without its AES key will say it needs the key for full coverage,
+  and will still compile what it can read.
+- "Delete all" will no longer say a compile is in progress after a compile has finished.
+- NVIDIA players without a recording will no longer compile Unreal games with a root-signature layout the game doesn't
+  use (an extra, larger compile). The first compile after the update redoes those games once.
+- Microsoft Flight Simulator 2024 and other games whose shader delivery has no engine name will take the compiled cache
+  again instead of waiting for it with "Not reached yet".
+- SCSKiller will hand a compile to a game whose shader cache folder you moved to another drive with a junction or link,
+  without rereading it at every start, and the game's page will say why when it can't.
+- A compile's shader cache will no longer go missing when one of its files is damaged or can't be read, or when a driver
+  update comes before the game's next start.
+
 ## [1.3.3] - 2026-10-26
 
 **Fixed**

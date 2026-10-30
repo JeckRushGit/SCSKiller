@@ -28,6 +28,12 @@ public sealed class CarvedReader : IEngineReader
     public const string Family = "Carved", EmbeddedRootSignatures = "+RTS0", Platform = "D3D12";
     public const string RedEngine4 = "REDengine 4", Northlight2 = "Northlight 2";
 
+    /// <summary>Asobo's engine (A Plague Tale: Requiem), a fork of the carved family by its root files, for its root-signature rule.</summary>
+    public const string Zouna = "Zouna";
+
+    static string? ForkOf(string installDir) =>
+        File.Exists(Path.Combine(installDir, "All.psc")) && File.Exists(Path.Combine(installDir, "LangDef.tsc")) ? Zouna : null;
+
     public static readonly string[] Families = [Family, RedEngine4, Northlight2];
 
     /// <summary>The engine a carved game is built with, by a file only it ships: REDengine 4 (Cyberpunk 2077)
@@ -90,7 +96,7 @@ public sealed class CarvedReader : IEngineReader
             : programs == 0 ? $"no raw DXBC/DXIL shaders in its files ({read / 1e9:F1} GB sampled): shaders are {packed}"
             : graphics == 0 ? $"only {compute} raw compute shaders: graphics shaders are {packed}"
             : $"only {graphics} raw graphics shaders: the rest are {packed}";
-        return new EngineInfo(Fingerprint(game.InstallDir), programs == 0 ? "-" : version, null, GraphicsApi(game, dxil > 0), false, unsupported);
+        return new EngineInfo(Fingerprint(game.InstallDir), programs == 0 ? "-" : version, ForkOf(game.InstallDir), GraphicsApi(game, dxil > 0), false, unsupported);
     }
 
     /// <summary>A Godot export's renderer by its pack's Godot major version: 4 renders on Vulkan by default, 3 on OpenGL. The pack

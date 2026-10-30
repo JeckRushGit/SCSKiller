@@ -13,6 +13,7 @@ sealed class PlanBuilder
     readonly ShaderIndex index;
     readonly Recording? recording;
     readonly VendorCaps caps;
+    bool Nvidia => caps.Profile.StartsWith("nvidia");
     readonly string outDir;
     readonly IProgress<string>? log;
     readonly CancellationToken ct;
@@ -32,7 +33,7 @@ sealed class PlanBuilder
     readonly RulesFile rules;
     readonly PlanRule rule;
     readonly uint maxSrvs; // the game's MAX_SRVS when its shaders need more than the rule's (0 = the rule's)
-    readonly bool nvExtension; // RootSig.NvExtensionEverywhere
+    bool nvExtension; // RootSig.NvExtensionEverywhere, confirmed by the recording's own root signatures or, without them, by a rule naming the game
 
     // the recording
     readonly List<Rec> recs = [];   // PSO records ('G' / 'C' / 'S'): what plans are built from
@@ -223,6 +224,12 @@ sealed class PlanBuilder
             var left = recs.RemoveAll(r => bad.Contains(Parse(r).Rs)) + stateObjects.RemoveAll(r => ParseStateObject(r).RootSignatures.Any(bad.Contains));
             log?.Report($"warning: recorded: {bad.Count} malformed root signatures left out with the {left} records naming them");
         }
+        // the game's own recorded root signatures decide: Returnal binds space 1001 in its ray tracing libraries only (0 of 9,652 raster ones carry it),
+        // without them only a rule naming the game (Gears of War: E-Day) keeps it: the shader test alone also fires on games that bind it in ray tracing only
+        if (nvExtension) nvExtension = recs.Where(r => !layered.Contains(r.Key) && Parse(r).Stages.Values.All(bc.ContainsKey)).Select(r => Parse(r).Rs).Distinct()
+                .Select(h => recBlobs.TryGetValue(h, out var blob) ? blob : null).OfType<byte[]>().ToList() is { Count: > 0 } recorded
+                ? 2 * recorded.Count(blob => RootSig.Parse(blob).Slots.Any(x => x is { Type: 1, Space: 1001 })) > recorded.Count
+                : rule.RootSignature?.Stock?.NvExtensionEverywhere == true;
         var unbuilt = 0;
         foreach (var r in recs)
         {
@@ -247,8 +254,8 @@ sealed class PlanBuilder
                 {
                     // a GPU without mesh shaders gets no mesh and amplification deny flags, and a shared recording mixes both
                     // (Townfall's: 9,426 of 23,937 recorded root signatures)
-                    if (RootSig.Serialize(RootSig.Build(rule, st, MeshTier(pso.Stages), maxSrvs, nvExtension), its).AsSpan().SequenceEqual(rsBlob)
-                        || MeshTier(pso.Stages) && RootSig.Serialize(RootSig.Build(rule, st, false, maxSrvs, nvExtension), its).AsSpan().SequenceEqual(rsBlob)) builtOk++;
+                    if (RootSig.Serialize(RootSig.Build(rule, st, MeshTier(pso.Stages), maxSrvs, nvExtension, Nvidia), its).AsSpan().SequenceEqual(rsBlob)
+                        || MeshTier(pso.Stages) && RootSig.Serialize(RootSig.Build(rule, st, false, maxSrvs, nvExtension, Nvidia), its).AsSpan().SequenceEqual(rsBlob)) builtOk++;
                     samplers ??= its;
                     if (SamplerVariants.Setting(rsBlob) is { } x)
                     {
@@ -304,6 +311,7 @@ sealed class PlanBuilder
 
     void Decide()
     {
+        (builtOk, builtN) = (builtOk + (recording?.OtherVendors ?? 0), builtN + (recording?.OtherVendors ?? 0));
         var fromRecording = builtN > 0;
         verified = fromRecording ? builtOk >= 0.99 * builtN : RootSig.Verified(rules.RuleFor(engine), engine);
         build = fromRecording ? verified : rules.RuleFor(engine) != null;
@@ -375,7 +383,7 @@ sealed class PlanBuilder
         if (!RootSig.InStageSets(rule, stages.Keys.Select(k => (Stage)k))) return null; // not a stage set the rule was confirmed on
         if (!build) return rsByCounts.TryGetValue(Planner.CountsKey(Infos(stages)), out var learned) ? learned.FirstOrDefault(r => Uncovered(r, stages) == null, learned[0]) : null;
         RootSig.Desc desc;
-        try { desc = RootSig.Build(rule, Infos(stages), MeshTier(stages), maxSrvs, nvExtension); }
+        try { desc = RootSig.Build(rule, Infos(stages), MeshTier(stages), maxSrvs, nvExtension, Nvidia); }
         catch (RootSig.SerializeException e) when (rule.RootSignature?.Re != null)   // a stage set another rule doesn't describe is a broken rule: no plan
         {
             unbuilt ??= e.Message;
@@ -404,6 +412,10 @@ sealed class PlanBuilder
     string? unserializable;   // the first serializer error
     string? unbuilt;          // the first reason the rule built none
     bool unbuildable;         // RootSigOf's last null: the runtime won't serialize it (a pipeline that can't exist, not a gap)
+
+    /// <summary>A stage set whose PS writes SV_StencilRef on a GPU without it (<see cref="Planner.StencilRefUnsupported"/>): a
+    /// pipeline that can't exist, not a gap.</summary>
+    const string PsStencilRef = "ps_stencil_ref";
 
     /// <summary>What a stage set without a root signature counts as.</summary>
     string NoRs => unbuildable ? "rs_unserializable" : "no_rs";
@@ -513,6 +525,7 @@ sealed class PlanBuilder
             : templates.GetValueOrDefault($"{shape}|{psOut}") ?? templates.GetValueOrDefault(shape);
         if (rs == null || (cands == null && (!synth || topo == 0))) { Count(rs == null ? NoRs : gs != null ? "no_gs_template" : "no_template"); return; }
         if (have.Contains(Tuple(rs, stages))) { Count("already_recorded"); return; }
+        if (Planner.StencilRefUnsupported(caps, Infos(stages))) { Count(PsStencilRef); return; }
         if (Uncovered(rs, stages) is { } left) { Count(left); return; }
         usedRs.Add(rs);
         Count("generated");
@@ -570,6 +583,7 @@ sealed class PlanBuilder
             }
             if (rs == null) { Count(NoRs); return; }
             if (!have.Contains(Tuple(rs, stages)) && Uncovered(rs, stages) is { } left) { Count(left); return; } // recorded: the game created it
+            if (!have.Contains(Tuple(rs, stages)) && Planner.StencilRefUnsupported(caps, Infos(stages))) { Count(PsStencilRef); return; }
             if (rsBlobs.TryGetValue(rs, out var blob)) facts.AddRootSignature(rs, blob); // VS units share PIXEL-only differences
             var l = stages.TryGetValue((int)Stage.Vertex, out var vs) ? layouts.TryGetValue(vs, out var r) ? r : layouts[vs] = facts.Layouts(bc[vs]) : none;
             var s = stages.TryGetValue((int)Stage.Pixel, out var ps) ? shapes.TryGetValue(ps, out var q) ? q : shapes[ps] = facts.Shapes(bc[ps]) : new([], Provenance.Exact);
@@ -1245,6 +1259,13 @@ sealed class PlanBuilder
 
     static bool IsCompute(SortedDictionary<int, string> stages) => stages.Count == 1 && stages.ContainsKey((int)Stage.Compute);
 
+    /// <summary>A compute PSO whose shader carries Unreal's NVIDIA extension flag (5.8+) and whose root signature has the
+    /// extension table (u0 space 1001): Unreal creates it with the extension slot set, as Gears of War: E-Day's recording
+    /// shows for all 12,867 of its compute PSOs with that table.</summary>
+    bool NvFlagged(string rs, SortedDictionary<int, string> stages) =>
+        IsCompute(stages) && bc.TryGetValue(stages[(int)Stage.Compute], out var cs) && (cs.Counts.Flags & Unreal.ShaderContainer.UeFlags.NvIntrinsics) != 0
+        && (rsBlobs.TryGetValue(rs, out var b) || recBlobs.TryGetValue(rs, out b)) && RootSig.Parse(b).Slots.Any(x => x is { Type: 1, Space: 1001 });
+
     /// <summary>The plan file: root signatures, templates, items, D3D11 shaders (proxy db records, no shader bytes).</summary>
     Plan Write()
     {
@@ -1261,6 +1282,13 @@ sealed class PlanBuilder
             body.AddRange(synthesized.Concat(synthCopies).Where(r => !nvComputeOnly || IsCompute(Parse(r).Stages))
                 .Concat(items.Concat(itemCopies).Where(i => !nvComputeOnly || IsCompute(ParseItem(i).Stages)).Select(i => new Rec('P', i)))
                 .Select(r => new NvState(r.Key, nv.Slot, nv.Space, 1, nv.Options).ToRec()));
+        else if (caps.Profile.StartsWith("nvidia"))
+        {
+            var flagged = synthesized.Concat(synthCopies).Where(r => Parse(r) is var p && NvFlagged(p.Rs, p.Stages))
+                .Concat(items.Concat(itemCopies).Where(i => ParseItem(i) is var p && NvFlagged(p.Rs, p.Stages)).Select(i => new Rec('P', i))).ToList();
+            body.AddRange(flagged.Select(r => new NvState(r.Key, 0, 1001, 1, 0).ToRec()));
+            if (flagged.Count > 0) log?.Report($"NVAPI: {flagged.Count} compute PSOs whose shader uses NVIDIA's extensions get shader-extension slot 0 space 1001");
+        }
         body.AddRange(rtItems.Select(i => new Rec('Y', i)));
         body.AddRange(hitGroupItems.Select(i => new Rec('H', i)));
         body.AddRange(d3d11.Select(h => new Rec('1', D3D11Item(bc[h].Stage, h))));
@@ -1292,7 +1320,7 @@ sealed class PlanBuilder
             new PlanStats(pipelines + replayable.Count, items.Count + synthesized.Count + rtItems.Count + hitGroupItems.Count, synthesized.Count, usedRs.Count, dx12 && (verified || embeddedRs > 0 || mapRoots),
                 unitsBy[(int)Provenance.Exact], unitsBy[(int)Provenance.Inferred], unitsBy[(int)Provenance.Guessed], layoutCoverage, n11, packNew,
                 stats.GetValueOrDefault("rs_uncovered"), rtLibs - rtUnbuilt, inlineOnly || engine.NoRtPipelines || !rayTracing ? 0 : rtLibs - rtCovered - rtUnbuilt,
-                StageSets: seen.Count + unpaired - stats.GetValueOrDefault("rs_unserializable"), LeftOut: new[] { "no_rs", "no_template", "no_gs_template", "rs_uncovered", "own_rs_uncovered", "rs_unknown", "stream_output" }.Sum(stats.GetValueOrDefault),
+                StageSets: seen.Count + unpaired - stats.GetValueOrDefault("rs_unserializable") - stats.GetValueOrDefault(PsStencilRef), LeftOut: new[] { "no_rs", "no_template", "no_gs_template", "rs_uncovered", "own_rs_uncovered", "rs_unknown", "stream_output" }.Sum(stats.GetValueOrDefault),
                 MiddlewareSharedItems: packShared, RtStateObjects: replayable.Count, RtInline: rtInline,
                 RsRule: RootSig.RuleFor(engine)?.Id, BuiltOk: builtOk, BuiltN: builtN, D3D11Draws: items11.Count, Variants: synthCopies.Count + itemCopies.Count + replays.Count - pipelines,
                 CacheBudgetLeftOut: cacheLeftOut, RecordedOnly: !pairs),
