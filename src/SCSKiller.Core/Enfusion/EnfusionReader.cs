@@ -25,6 +25,18 @@ public sealed class EnfusionReader : IEngineReader
 
     public sealed record Loc(string Pak, EnfusionPak.Entry Entry);
 
+    /// <summary>The Enfusion games whose plan from the files alone a real session confirmed, by store id, with the evidence:
+    /// they show "no recording needed" (Planner.CheckD3D12), any other Enfusion game "not tested". Not
+    /// confirmed-engines.json: its schema (and the server's copy older builds read) takes Unreal versions only.</summary>
+    static readonly Dictionary<string, string> Confirmed = new()
+    {
+        ["steam:1874880"] = "Arma Reforger, 2026-11-01, RTX GPU: after the files-only compile an offline session found 905 of 926 "
+            + "pipeline creates in the cache and 1 shader stutter; 0 after compiling with the recordings",
+    };
+
+    /// <summary>A game of <see cref="Confirmed"/> (<see cref="EngineInfo.Game"/> is the store id Detect gives).</summary>
+    public static bool IsConfirmed(EngineInfo e) => e.Family == Family && e.Game is { } g && Confirmed.ContainsKey(g.Split('@')[0]);
+
     /// <summary>Where each container is, per game id, from the last Index. ponytail: in memory only, like the carver's;
     /// ReadShaders re-indexes when it runs without an Index in the same process.</summary>
     readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, Loc>> located = new();
@@ -62,7 +74,7 @@ public sealed class EnfusionReader : IEngineReader
             }
         if (read == 0) return new EngineInfo(Family, "-", null, "D3D12", false, "its shader archive holds no shader SCSKiller can read");
         var version = (dxil == read ? Format : "PAC1 DXBC") + (rts0 >= 0.9 * read ? CarvedReader.EmbeddedRootSignatures : "");
-        return new EngineInfo(Family, version, null, "D3D12", false, null);
+        return new EngineInfo(Family, version, null, "D3D12", false, null, Game: game.Id);
     }
 
     public int ReaderVersion(EngineInfo engine) => 1;

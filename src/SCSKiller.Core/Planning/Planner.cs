@@ -190,7 +190,8 @@ public sealed class Planner(string? packDir = null, string? sharedPackDir = null
         if (!caps.CacheKeyedByExeName) return new(Readiness.Unsupported, "not supported on this GPU yet");
         // EmbeddedRootSignatures: any reader of shaders that carry them (carved, FromSoftware) or of records that name them (Dawn)
         if (caps.StateIndependentCache && (RootSig.Verified(engine) || engine.Version.EndsWith(CarvedReader.EmbeddedRootSignatures)))
-            return new(Readiness.Ready, App.Format.Then(engine.Family is BlackSpace.BlackSpaceReader.Family or Enfusion.EnfusionReader.Family ? Untested : NoRecording, maybe));
+            return new(Readiness.Ready, App.Format.Then(engine.Family == BlackSpace.BlackSpaceReader.Family
+                || engine.Family == Enfusion.EnfusionReader.Family && !Enfusion.EnfusionReader.IsConfirmed(engine) ? Untested : NoRecording, maybe));
         if (recording != null && File.Exists(recording.DbPath) && new FileInfo(recording.DbPath).Length > 0)
             return caps.StateIndependentCache || HasDraws(recording) ? new(Readiness.Ready, App.Format.Then("planned from a recording", maybe))
                 : FromSteam(recording) is { } drawless ? new(Readiness.Ready, App.Format.Then(drawless, maybe))
