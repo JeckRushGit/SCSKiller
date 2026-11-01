@@ -833,9 +833,11 @@ public sealed class DetailVm(string id) : Bindable
     public bool ShowSessionButton => !(Risk && AlwaysOn) || s.OfflineRunning;
     public string OfflineButtonText => Risk
         ? s.OfflineRunning ? "Session running…" : "Record a session (at your own risk)"
-        : s.OfflineRunning ? "Offline session running…" : "Record offline without EasyAntiCheat (at your own risk)";
-    public string OfflineRiskText => Risk ? RiskText(s) : OfflineRisk;
-    public const string OfflineRisk = "Starts the game offline without EasyAntiCheat. SCSKiller removes its files when the game exits (after a crash: "
+        : s.OfflineRunning ? "Offline session running…" : $"Record offline without {OfflineAntiCheat} (at your own risk)";
+    public string OfflineRiskText => Risk ? RiskText(s) : OfflineRisk(OfflineAntiCheat);
+    /// <summary>The anti-cheat an offline session starts the game without (Games.OfflineEac: EasyAntiCheat or BattlEye).</summary>
+    public string OfflineAntiCheat => ScsKiller.AntiCheatName(s.AntiCheat);
+    public static string OfflineRisk(string antiCheat) => $"Starts the game offline without {antiCheat}. SCSKiller removes its files when the game exits (after a crash: "
         + "at the next logon). If any are left when you play online, you could be banned. Steam must be running. Don't uninstall SCSKiller mid-session.";
     public static string RiskText(GameState g) => $"This game contains {ScsKiller.AntiCheatName(g)}. If you enable the recorder, it's at your own risk. "
         + "SCSKiller isn't responsible if your account gets banned.";

@@ -670,8 +670,8 @@ public sealed partial class DetailPage : Page
     {
         var (vm, id) = (Vm, Vm.Row.Id);
         if (vm.Risk) { await RecordRisk(vm, id); return; }
-        if (!await App.ConfirmAsync(this, $"Start {vm.Name} offline without EasyAntiCheat?",
-                new TextBlock { TextWrapping = TextWrapping.Wrap, Text = DetailVm.OfflineRisk + " Online play isn't possible in that session." },
+        if (!await App.ConfirmAsync(this, $"Start {vm.Name} offline without {vm.OfflineAntiCheat}?",
+                new TextBlock { TextWrapping = TextWrapping.Wrap, Text = DetailVm.OfflineRisk(vm.OfflineAntiCheat) + " Online play isn't possible in that session." },
                 "Record offline session")) return;
         await StartSession(vm, () => App.Core.StartOfflineSession(id, confirmed: true));
     }

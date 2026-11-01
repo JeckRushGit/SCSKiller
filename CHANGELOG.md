@@ -4,6 +4,13 @@ All notable changes to the SCSKiller app and command line. Versions follow [Sema
 
 ## [Unreleased]
 
+**New**
+
+- **Arma Reforger** (Enfusion) compiles from its shader archive, without a recording, on NVIDIA.
+- **Arma Reforger** can record an offline session without BattlEye, as ELDEN RING can without EasyAntiCheat: allow it on
+  the game's page and confirm each launch, at your own risk. Steam must be running. Only single player and servers
+  without BattlEye work in that session.
+
 **Fixed**
 
 - ACE COMBAT 7: SKIES UNKNOWN compiles its materials' shaders (about 34,000) instead of only the engine's global ones,

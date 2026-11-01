@@ -86,7 +86,7 @@ stutter only, not traversal or streaming stutter, and a shader it couldn't find 
   without recording them first. Sharing yours is opt-in, anonymous and hash-only.
 - **Leaves anti-cheat games alone** beyond reading their files: no launching, no injecting, no recorder, except in a
   session you allow per game and confirm every launch, at your own risk: without EasyAntiCheat for ELDEN RING and
-  ARMORED CORE VI, or in games with anti-cheat once you turn on "Allow the recorder in games with anti-cheat (at your own
+  ARMORED CORE VI, without BattlEye for Arma Reforger, or in games with anti-cheat once you turn on "Allow the recorder in games with anti-cheat (at your own
   risk)".
 
 ## Install
@@ -138,8 +138,8 @@ own risk, and its authors are not responsible for bans, crashes or lost data.
 
 **Is it safe with anti-cheat games?** Outside a session SCSKiller never launches them, injects into them or gives them
 the recorder. It only reads their files. A session is allowed per game, confirmed every launch, and at your own risk.
-The offline session for ELDEN RING and ARMORED CORE VI runs them offline without EasyAntiCheat when their exe is
-started directly: Steam must be running (offline mode is fine), and SCSKiller adds `d3d12.dll`, `scskiller.ini` and
+The offline session for ELDEN RING and ARMORED CORE VI runs them offline without EasyAntiCheat, and for Arma Reforger
+without BattlEye, when their exe is started directly: Steam must be running (offline mode is fine), and SCSKiller adds `d3d12.dll`, `scskiller.ini` and
 `steam_appid.txt` to the game's folder and starts the exe itself. With "Allow the recorder in games with anti-cheat (at
 your own risk)" on in Settings, any other supported game can run a session too: SCSKiller starts the game as usual, with
 `d3d12.dll` and `scskiller.ini` in its folder. Games with anti-cheat can treat the recorder as cheating and ban your

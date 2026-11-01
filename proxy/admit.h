@@ -53,7 +53,8 @@ static std::wstring module_path(HMODULE m) {
 //    more than 64 up refuses), each listed whole: the built-in list, plus scskiller.ini markers= (it only adds; malformed:
 //    no). pid= and pid_time= (its creation FILETIME, UTC; under Wine its Linux pid and /proc start time, wine_bound) name
 //    the one process the app started suspended itself for an offline session: for that process EasyAntiCheat's names
-//    leave the list; any other process with that ini is refused;
+//    leave the list, or BattlEye's instead with offline=battleye (signed, only with pid= and without risk=: else "offline=
+//    malformed"); its client module (anti_cheat_loaded) still refuses; any other process with that ini is refused;
 //  - no "Riot Games" folder in the exe's path;
 //  - no anti-cheat client module loaded, and not a VAC game by Steam's files (vac_now);
 //  - this dll was loaded from the exe's folder;
@@ -816,7 +817,7 @@ static bool signed_by_app(const std::wstring& root) {
     const std::string key = read_all(dir + L"\\recorder.key", 256);
     if (key.size() < 32 || key.size() > 128) return false;
     const std::wstring stamp = signed_stamp(ini_string(L"exe_size"), ini_string(L"exe_time"), pid, ini_string(L"pid_time"), ini_string(L"risk"), ini_string(L"vendor"),
-                                            ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"), traversal_lines(ini_string));
+                                            ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"), traversal_lines(ini_string), ini_string(L"offline"));
     const auto no_slash = [](const std::wstring& d) { return d.substr(0, d.size() > 3 ? d.size() - 1 : d.size()); };
     const std::wstring exe_key = file_key(exe), want = recorder_sig(key, exe_key, folder_file_key(no_slash(admit_dir())), stamp, ini_string(L"root"),
                                                                       folder_file_key(no_slash(root)));
@@ -894,9 +895,14 @@ static const char* admission_verdict(bool whole, const std::string& read, bool e
                     : g_by_path && (ini_string(L"root") != L"." || !listed_here()) ? "the game's folder reads differently inside the game"
                     : bound && (unbound = bound_here()) ? unbound
                     : !risk_well_formed(ini_string(L"pid"), ini_string(L"risk")) ? "risk= malformed"
+                    : !offline_well_formed(ini_string(L"pid"), ini_string(L"risk"), ini_string(L"offline")) ? "offline= malformed"
                     : !anti_cheat_markers(markers) ? "markers= malformed" : nullptr;
     if (!why) why = revoked_here();
-    if (!why && bound && !risk) markers.erase(markers.begin(), markers.begin() + kEasyAntiCheatMarkers);  // the app started this process without EasyAntiCheat
+    if (!why && bound && !risk) {
+        // the app started this process without the anti-cheat its session names: EasyAntiCheat's names, or BattlEye's with offline=battleye
+        if (ini_string(L"offline") == L"battleye") drop_battleye_markers(markers);
+        else markers.erase(markers.begin(), markers.begin() + kEasyAntiCheatMarkers);
+    }
     const std::vector<std::wstring> dirs = why ? std::vector<std::wstring>{} : folders_to(here, root);
     if (!why && dirs.empty()) why = "install root too far up";
     if (!why) {

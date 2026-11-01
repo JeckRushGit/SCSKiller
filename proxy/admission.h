@@ -77,12 +77,13 @@ inline const char* with_path(const char* why, const std::string& p) {
 }
 
 // The stamp lines sig= covers, as ScsKiller.Signed writes them: exe_size=, exe_time=, then pid= and pid_time= when pid= is
-// there, then risk= when it is there, then the others and the traversal_ lines (traversal_lines).
+// there, then offline= when it is there, then risk= when it is there, then the others and the traversal_ lines (traversal_lines).
 inline std::wstring signed_stamp(const std::wstring& size, const std::wstring& time, const std::wstring& pid, const std::wstring& pid_time, const std::wstring& risk,
                                  const std::wstring& vendor = L"", const std::wstring& overlay = L"", const std::wstring& play_s = L"", const std::wstring& tag = L"",
-                                 const std::wstring& traversal = L"") {
+                                 const std::wstring& traversal = L"", const std::wstring& offline = L"") {
     std::wstring s = L"exe_size=" + size + L"\r\nexe_time=" + time + L"\r\n";
     if (!pid.empty()) s += L"pid=" + pid + L"\r\npid_time=" + pid_time + L"\r\n";
+    if (!offline.empty()) s += L"offline=" + offline + L"\r\n";
     if (!risk.empty()) s += L"risk=" + risk + L"\r\n";
     if (!vendor.empty()) s += L"vendor=" + vendor + L"\r\n";
     if (!overlay.empty()) s += L"overlay=" + overlay + L"\r\n";
@@ -107,6 +108,12 @@ template <class Get> std::wstring traversal_lines(Get get) {
 
 // risk= is either missing, or 1 together with pid=.
 inline bool risk_well_formed(const std::wstring& pid, const std::wstring& risk) { return risk.empty() || (!pid.empty() && risk == L"1"); }
+
+// offline= is either missing, or battleye together with pid= and without risk=: an offline session the app started without
+// BattlEye (Games.OfflineEac, an entry with "antiCheat": "BattlEye"), inside the signed stamp.
+inline bool offline_well_formed(const std::wstring& pid, const std::wstring& risk, const std::wstring& offline) {
+    return offline.empty() || (!pid.empty() && risk.empty() && offline == L"battleye");
+}
 
 // The verdict from what the checks found, in their order: a Riot Games install, the markers in the folders up to the install
 // root ("name (where)"; {"?"} when one couldn't be listed whole) with found_why the reason for the first, the anti-cheat client
@@ -193,6 +200,20 @@ static const wchar_t* const kAntiCheatMarkers[] = {  // GameFiles.Markers; "*x":
     L"arbiter.dll", L"gameguard.des", L"DenuvoAC", L"denuvo-anti-cheat.sys", L"denuvo-anti-cheat-runtime.dll",
     L"denuvo-anti-cheat-update-service.exe", L"Denuvo Anti-Cheat Installer.exe", L"Elytra", L"Elytra.exe", L"Elytra-Setup.exe", L"*.xem", L"*_BE.exe"};
 static const size_t kEasyAntiCheatMarkers = 5;  // the list's first entries
+
+// BattlEye's names in kAntiCheatMarkers (GameFiles.Markers' BattlEye ones): an offline session without BattlEye (offline=battleye)
+// leaves them out of its folder listings. Its client module (anti_cheat_loaded) still refuses.
+static const wchar_t* const kBattlEyeMarkers[] = {L"BattlEye", L"BEService.exe", L"BEService_x64.exe", L"BELauncher.exe", L"BEClient_x64.dll", L"BEClient.dll", L"*_BE.exe"};
+
+// markers without BattlEye's built-in names (only those: a markers= name the app added stays).
+inline void drop_battleye_markers(std::vector<std::wstring>& markers) {
+    for (auto* be : kBattlEyeMarkers)
+        for (auto it = markers.begin(); it != markers.end(); ++it)
+            if (*it == be) {
+                markers.erase(it);
+                break;
+            }
+}
 
 static std::string lower_az(std::string s) {
     for (auto& c : s)

@@ -24,7 +24,7 @@ the compile queue and the recorder's lifecycle. It builds for Windows (`net10.0-
   finds in the user's folders of games (each folder in one is a game). `GameFiles` picks the real
   exe and is the only anti-cheat detector. `Vac` decides Valve Anti-Cheat. `ReShade` classifies shader mods.
 - *Engine readers* (`Unreal/`, `Unity/`, `FromSoft/`, `ReEngine/`, `RedEngine/`, `Northlight/`, `Dagor/`, `Rage/`,
-  `Source2/`, `NaughtyDog/`, `SantaMonica/`, `Nixxes/`, `Tank/`, `Decima/`, `Luminous/`, `ForzaTech/`, `BlackSpace/`, `Swarm/`, `Snowdrop/`, and `Carved/` for any
+  `Source2/`, `NaughtyDog/`, `SantaMonica/`, `Nixxes/`, `Tank/`, `Decima/`, `Luminous/`, `ForzaTech/`, `BlackSpace/`, `Swarm/`, `Snowdrop/`, `Enfusion/`, and `Carved/` for any
   game shipping raw DXBC/DXIL): each lists the build's shaders as a `ShaderIndex` grouped in shader maps (shaders that can be drawn
   together) and reads their bytes on demand. A shader is the SHA-1 of its container (`ShaderContainer.Parse`). A DirectX 12
   game with no readable shader at all (`CarvedReader.RecordedOnly`) plans only the pipelines of this PC's recording, from
@@ -236,12 +236,15 @@ nothing else, and sets only the game page's similar-systems line.
   marker, Riot, module and VAC checks: `risk=1` after `pid=` and `pid_time=`, inside the signed stamp, with the binding
   to this process. Then the proxy admits past what those checks find and logs it. `risk=` without a pid or with another
   value is refused (`risk= malformed`), and what a check couldn't inspect still refuses. Only the two session starts
-  sign it, and a bound session without it ignores only EasyAntiCheat's own marker names. The stamp also signs `vendor=amd`
+  sign it, and a bound session without it ignores only EasyAntiCheat's own marker names, or, with `offline=battleye`
+  (signed after `pid_time=`, only without `risk=`, else `offline= malformed`), only BattlEye's; a BattlEye client module
+  loaded still refuses. The stamp also signs `vendor=amd`
   (the AGS hook) and the in-game panel's lines, so a hand edit can't turn either on. The AGS hook goes in when AGS loads,
   on a check of the stamp without its key, and admission takes it out unless `vendor=amd` is in the ini it verified. `frames_only=1` stays unsigned: it
   only narrows what is recorded.
 - *Sessions (app only):* the recorder goes into an anti-cheat game only in a session the user allowed for that game and
-  confirmed for that launch. EasyAntiCheat games of `Games/offline-eac.json` run it without the anti-cheat
+  confirmed for that launch. EasyAntiCheat games of `Games/offline-eac.json`, and its BattlEye ones (`"antiCheat":
+  "BattlEye"`: Arma Reforger, whose Steam launch starts BattlEye's launcher), run it without the anti-cheat
   (`ScsKiller.StartOfflineSession`): their exe starts directly with `steam_appid.txt` beside it. With the setting
   "Allow the recorder in games with anti-cheat (at your own risk)" on, any other detected anti-cheat or VAC game on D3D12
   whose store SCSKiller can start, its engine supported or not and no server verdict against it, runs it

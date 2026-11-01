@@ -146,7 +146,7 @@ public sealed class GameRecord
     public bool RecorderRollback { get; set; }               // a failed install couldn't take the proxy out: the next reconcile does
     public bool RecorderClaimed { get; set; }                // taken over from another copy: its recorder is replaced by this build's, even a newer build's
     public string? RecorderFailure { get; set; }             // the last install or update's failure as the game page shows it (ScsKiller.InstallFailed); null = none
-    public bool OfflineRecord { get; set; }                  // opt-in: offline sessions without EasyAntiCheat may be started (Games.OfflineEac)
+    public bool OfflineRecord { get; set; }                  // opt-in: offline sessions without its anti-cheat may be started (Games.OfflineEac)
     public bool AlwaysRecord { get; set; }                   // opt-in: every launch records as a confirmed risk session would (ScsKiller.SetAlwaysRecord)
     public AntiCheat AlwaysRecordShown { get; set; }         // ...the anti-cheat the user confirmed it with: another one found turns it off
     public OfflineSession? OfflineSession { get; set; }      // one was started and its folder isn't back to how it was yet
@@ -273,7 +273,7 @@ public sealed record ChainedDll(string Name, string Sha256);
 /// <paramref name="Install"/>: the next= and the install root= its writer gave it.</summary>
 public sealed record IniOwner(string Dir, string? Tracked = null, bool Users = false, bool Remove = false, string? Chain = null, string? Install = null);
 
-/// <summary>An offline session SCSKiller started without EasyAntiCheat: the game, its exe and install, the process it started
+/// <summary>An offline session SCSKiller started without its anti-cheat (EasyAntiCheat or BattlEye): the game, its exe and install, the process it started
 /// (its pid and creation FILETIME; 0 = none yet), and whether it was resumed (else it is still suspended, or was). The files
 /// it placed are <see cref="GameRecord.RecorderFiles"/>, by hash; <paramref name="Created"/> names the files in the exe's
 /// folder it creates itself, each recorded before it exists (none existed before the session; temp names, a

@@ -712,7 +712,7 @@ public sealed partial class DetailPage : UserControl, INavigable
     {
         var (vm, id) = (Vm, Vm.Row.Id);
         if (vm.Risk) { await RecordRisk(vm, id); return; }
-        if (!await App.ConfirmAsync($"Start {vm.Name} offline without EasyAntiCheat?", Text(DetailVm.OfflineRisk + " Online play isn't possible in that session."),
+        if (!await App.ConfirmAsync($"Start {vm.Name} offline without {vm.OfflineAntiCheat}?", Text(DetailVm.OfflineRisk(vm.OfflineAntiCheat) + " Online play isn't possible in that session."),
                 "Record offline session")) return;
         await StartSession(vm, () => Host.Core.StartOfflineSession(id, confirmed: true));
     }

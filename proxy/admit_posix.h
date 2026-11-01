@@ -956,7 +956,7 @@ static bool signed_by_app(const std::string& root) {
     const std::string key = read_all(dir + "/recorder.key", 256);
     if (key.size() < 32 || key.size() > 128) return false;
     const std::wstring stamp = signed_stamp(ini_string(L"exe_size"), ini_string(L"exe_time"), pid, ini_string(L"pid_time"), ini_string(L"risk"), ini_string(L"vendor"),
-                                            ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"));
+                                            ini_string(L"overlay"), ini_string(L"ab_play_s"), ini_string(L"ab_tag"), L"", ini_string(L"offline"));
     const std::string want = recorder_sig(key, file_key(exe), file_key(no_slash(admit_dir())), stamp, ini_string(L"root"), file_key(no_slash(root)));
     return !want.empty() && to_utf8(sig) == want;
 }
@@ -983,9 +983,11 @@ static const char* admission_verdict(bool whole, const std::string& read, bool e
                     : !signed_by_app(root) ? "not signed by SCSKiller"
                     : bound && !bound_here() ? "bound to another process"
                     : !risk_well_formed(ini_string(L"pid"), ini_string(L"risk")) ? "risk= malformed"
+                    : !offline_well_formed(ini_string(L"pid"), ini_string(L"risk"), ini_string(L"offline")) ? "offline= malformed"
                     : !anti_cheat_markers(markers) ? "markers= malformed" : nullptr;
     if (!why) why = revoked_here();
-    if (!why && bound && !risk) markers.erase(markers.begin(), markers.begin() + kEasyAntiCheatMarkers);
+    // offline sessions without BattlEye are Windows-only (ScsKiller.OfflineUnavailable): offline=battleye keeps BattlEye's names here
+    if (!why && bound && !risk && ini_string(L"offline").empty()) markers.erase(markers.begin(), markers.begin() + kEasyAntiCheatMarkers);
     const std::vector<std::string> dirs = why ? std::vector<std::string>{} : folders_to(here, root);
     if (!why && dirs.empty()) why = "install root too far up";
     if (!why) {

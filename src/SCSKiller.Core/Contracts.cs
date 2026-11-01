@@ -427,7 +427,7 @@ public sealed record GameState(
     int? CacheCapGB = null,            // the game page's compile size limit (GameRecord.CacheCapGB); null = none
     int? PlanCacheCapGB = null,        // the limit the plan was built with (GameRecord.PlanCacheCapGB): what its left-out row names
     bool RecordedEnough = false,       // GameRecord.RecordedLong: asking for "5 minutes" again says nothing
-    bool OfflineEligible = false,      // an EasyAntiCheat game of Games.OfflineEac on D3D12, an OS with offline sessions (none on Linux yet): an offline session may be offered
+    bool OfflineEligible = false,      // an EasyAntiCheat or BattlEye game of Games.OfflineEac on D3D12, an OS with offline sessions (none on Linux yet): an offline session may be offered
     bool OfflineRecord = false,        // the user allowed offline sessions for it (IScsKiller.SetOfflineRecording)
     bool OfflineRunning = false,       // a session SCSKiller started runs, or its files aren't out of the game folder yet (not one waiting for an Always record launch)
     bool AlwaysRecord = false,         // RiskEligible with "Always record" on (IScsKiller.SetAlwaysRecord): every launch records as a confirmed session would

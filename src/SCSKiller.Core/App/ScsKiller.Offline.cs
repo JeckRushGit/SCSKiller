@@ -12,7 +12,7 @@ using SCSKiller.Core.Warming;
 
 namespace SCSKiller.Core.App;
 
-// Offline sessions without EasyAntiCheat (Games.OfflineEac) and risk sessions beside a game's anti-cheat (StartRiskSession,
+// Offline sessions without EasyAntiCheat or BattlEye (Games.OfflineEac) and risk sessions beside a game's anti-cheat (StartRiskSession,
 // Settings.RecordAntiCheatGames): the only cases where the recorder goes into an anti-cheat game. The signed scskiller.ini
 // names one process (pid= and pid_time=; a risk session's carries risk=1 too, inside the signature), so any other launch is
 // a pass-through while the files are there. SCSKiller starts the exe itself, suspended, where it can, and only then places
@@ -732,7 +732,7 @@ public sealed partial class ScsKiller
             string? Refusal()
             {
                 if (OfflineUnavailable is { } unavailable) return unavailable;
-                if (entry == null) return "offline sessions without EasyAntiCheat aren't available for this game";
+                if (entry == null) return "offline sessions without its anti-cheat aren't available for this game";
                 if (dll == DllVulkan) return VulkanRecorderMissing;   // the layer is enabled by Steam's launch, which this session isn't
                 if (dll == Dll12 && s.StreamlineFirst) return SkipStreamline;   // a session places no preloader beside anti-cheat
                 if (GameVerdicts.Current.Unsupported(g, s.Engine) is { } why) return $"not supported: {why.Text}";
@@ -745,8 +745,8 @@ public sealed partial class ScsKiller
                 if (GameRunning(g)) return "it is running: close the game first";
                 if (_proxyDll == null || !File.Exists(_proxyDll)) return $"the recorder ({dll}) wasn't found next to SCSKiller";
                 if (stamp == null) return "its exe can't be read";
-                // fresh, not the scan's: EasyAntiCheat and nothing else
-                if (GameFiles.DetectAntiCheat(g) != AntiCheat.EasyAntiCheat || GameFiles.DetectAntiCheat(g, ignore: AntiCheat.EasyAntiCheat) != AntiCheat.None)
+                // fresh, not the scan's: the entry's anti-cheat and nothing else
+                if (GameFiles.DetectAntiCheat(g) != entry.AntiCheat || GameFiles.DetectAntiCheat(g, ignore: entry.AntiCheat) != AntiCheat.None)
                     return "its install has another anti-cheat, or couldn't be read whole";
                 // never alongside a mod: none of the names the session places may be there
                 if (Foreign(dir)) return "another SCSKiller copy's recorder is in its folder";
@@ -755,7 +755,7 @@ public sealed partial class ScsKiller
                 if (IntelLocalDriver(g)) return SkipIntelDriver;
                 if (!addAppId && File.ReadAllText(appIdFile).Trim() != entry.AppId) return $"its folder has a {SteamAppIdFile} with another app id";
                 if (ReShade.Detect(g) is { } mod) return $"ReShade ({Path.GetFileName(mod.Dll)}) is in its folder";
-                if (!ProcessNames().Contains("steam")) return SteamFirst;   // else the game restarts through Steam, with EasyAntiCheat
+                if (!ProcessNames().Contains("steam")) return SteamFirst;   // else the game restarts through Steam, with its anti-cheat
                 return null;
             }
             if (Refusal() is { } why) throw new InvalidOperationException(why == SteamFirst ? why : $"{g.Name}: no offline session: {why}");
@@ -765,7 +765,7 @@ public sealed partial class ScsKiller
             Store.SaveGame(gameId, rec);
             OfflineLeft()[gameId] = true;
             var since = DateTime.UtcNow;
-            RecorderLog($"{g.Name}: offline session without EasyAntiCheat: recorder in as {dll} ({dir})");
+            RecorderLog($"{g.Name}: offline session without {entry!.AntiCheatName}: recorder in as {dll} ({dir})");
             SafeProcessHandle? process = null;
             try
             {
@@ -780,7 +780,7 @@ public sealed partial class ScsKiller
                 process = StartAttested(g.ExePath, OfflineArguments, (h, pid, started) =>
                 {
                     _offline[gameId] = h;
-                    var ini = IniText(g, rec, Signed(g, stamp!, BoundTo(pid, started) + SignedLines(g, rec, session: true)));
+                    var ini = IniText(g, rec, Signed(g, stamp!, BoundTo(pid, started) + OfflineLineFor(entry.AntiCheat) + SignedLines(g, rec, session: true)));
                     var now = Store.LoadGame(gameId);
                     if (now.OfflineSession == null) throw new InvalidOperationException("its session was cleaned up meanwhile");
                     // every hash final before its file exists: the cleanup deletes a placed name only while it holds these bytes (the
@@ -795,7 +795,7 @@ public sealed partial class ScsKiller
                     Place(Path.Combine(dir, dll), CopyOf(_proxyDll!));
                     Place(Path.Combine(dir, "scskiller.ini"), Text(ini));
                     if (addAppId) Place(Path.Combine(dir, SteamAppIdFile), Text(entry!.AppId));
-                    if (GameFiles.DetectAntiCheat(g, quick: true, ignore: AntiCheat.EasyAntiCheat) is not AntiCheat.None and var other)
+                    if (GameFiles.DetectAntiCheat(g, quick: true, ignore: entry.AntiCheat) is not AntiCheat.None and var other)
                         throw new InvalidOperationException($"{other} appeared in its folder");
                 }, () =>
                 {
@@ -818,6 +818,13 @@ public sealed partial class ScsKiller
 
     /// <summary>scskiller.ini's lines that bind the recorder to one process: its pid and creation FILETIME.</summary>
     internal static string BoundTo(int pid, long created) => $"pid={pid}\r\npid_time={created}\r\n";
+
+    /// <summary>The signed line of an offline session without BattlEye, after <see cref="BoundTo"/>: the only stamp the proxy
+    /// leaves BattlEye's file names out for (admission.h offline_well_formed, drop_battleye_markers). None for EasyAntiCheat,
+    /// whose names a bound session leaves out as it always has.</summary>
+    internal const string OfflineLine = "offline=battleye\r\n";
+
+    internal static string OfflineLineFor(AntiCheat antiCheat) => antiCheat == AntiCheat.BattlEye ? OfflineLine : "";
 
     static string Hex(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 

@@ -204,7 +204,7 @@ public sealed partial class ScsKiller : IScsKiller
     public static string? SharedPackDir(string dataDir, GpuVendor v) => PackGpu(v) is { } gpu ? Path.Combine(dataDir, "community", "packs", gpu) : null;
 
     /// <summary>Unreal first, then the engines whose archives the carver can't see into (FromSoftware, Unity, RE Engine,
-    /// REDengine 3, Dagor, Source 2, RAGE, Naughty Dog, Santa Monica, Nixxes, Tank, Decima, Luminous, ForzaTech, BlackSpace, StarEngine, Swarm, Snowdrop) or whose pipelines and root signatures it doesn't know (Northlight), then the generic raw DXBC/DXIL carver.</summary>
+    /// REDengine 3, Dagor, Source 2, RAGE, Naughty Dog, Santa Monica, Nixxes, Tank, Decima, Luminous, ForzaTech, BlackSpace, StarEngine, Swarm, Snowdrop, Enfusion) or whose pipelines and root signatures it doesn't know (Northlight), then the generic raw DXBC/DXIL carver.</summary>
     public static IEngineReader DefaultReaders(string? dataDir = null)
     {
         dataDir ??= AppStore.DefaultDir;
@@ -226,6 +226,7 @@ public sealed partial class ScsKiller : IScsKiller
             (StarEngine.StarEngineReader.Family, new StarEngine.StarEngineReader()),
             (Swarm.SwarmReader.Family, new Swarm.SwarmReader()),
             (Snowdrop.SnowdropReader.Family, new Snowdrop.SnowdropReader(dataDir)),
+            (Enfusion.EnfusionReader.Family, new Enfusion.EnfusionReader()),   // before Carved: its shaders are zlib inside .pak
             .. CarvedReader.Families.Select(f => (f, (IEngineReader)carved))]);
     }
 
@@ -2034,9 +2035,9 @@ public sealed partial class ScsKiller : IScsKiller
 
     /// <summary>The game page's line for a game a risk session would be offered for but for its store (<see cref="GameState.RiskNoLaunch"/>).</summary>
     public static string NoLaunchNote(string store) => $"No recording session: SCSKiller can't start games from {store}.";
-    /// <summary>An EasyAntiCheat game that an offline session can record (<see cref="OfflineEac"/>), with no recording yet:
+    /// <summary>An EasyAntiCheat or BattlEye game that an offline session can record (<see cref="OfflineEac"/>), with no recording yet:
     /// NeedsRecording with this reason, "Needs an offline session".</summary>
-    public const string OfflineSessionNote = "EasyAntiCheat blocks the recorder, but you can record at your own risk with an offline session.";
+    public const string OfflineSessionNote = "Its anti-cheat blocks the recorder, but you can record at your own risk with an offline session.";
 
     /// <summary>The game waits for an offline session (<see cref="OfflineSessionNote"/>).</summary>
     public static bool NeedsOfflineSession(GameState s) => s.Status == GameStatus.NeedsRecording && s.StatusReason == OfflineSessionNote;
@@ -8033,13 +8034,14 @@ public sealed partial class ScsKiller : IScsKiller
         var stamp = "";
         if (sig != null)
         {
-            var (size, time, pid, started, risk) = (V("exe_size"), V("exe_time"), V("pid"), V("pid_time"), V("risk"));
+            var (size, time, pid, started, risk, offline) = (V("exe_size"), V("exe_time"), V("pid"), V("pid_time"), V("risk"), V("offline"));
             if (rooted == null || sig.Length != 40 || !sig.All(char.IsAsciiHexDigitLower) || !Long(size) || !Long(time)
                 || (pid == null) != (started == null) || pid != null && (!Int(pid) || !Long(started)) || risk != null && (pid == null || risk != "1")
+                || offline != null && (pid == null || risk != null || offline != "battleye")
                 || vendor != null && vendor != "amd" || (overlay == null) != (play == null) || (overlay == null) != (tag == null)
                 || overlay != null && (overlay != "1" || !Int(play) || tag is not ("before" or "after")))
                 return false;
-            stamp = $"exe_size={size}\r\nexe_time={time}\r\n" + (pid == null ? "" : BoundTo(int.Parse(pid), long.Parse(started!))) + (risk == null ? "" : RiskLine)
+            stamp = $"exe_size={size}\r\nexe_time={time}\r\n" + (pid == null ? "" : BoundTo(int.Parse(pid), long.Parse(started!))) + (offline == null ? "" : OfflineLine) + (risk == null ? "" : RiskLine)
                 + (vendor == null ? "" : "vendor=amd\r\n") + (overlay == null ? "" : $"overlay=1\r\nab_play_s={play}\r\nab_tag={tag}\r\n")
                 + TraversalLines(values.Where(v => v.Key.StartsWith("traversal_", StringComparison.Ordinal)).ToDictionary(v => v.Key["traversal_".Length..], v => v.Value))
                 + $"sig={sig}\r\n";
@@ -12259,7 +12261,7 @@ public sealed partial class ScsKiller : IScsKiller
     // after TraversalKeys, which this file declares first
     static readonly HashSet<string> SignedLineKeys = new(["vendor", "overlay", "ab_play_s", "ab_tag", .. TraversalKeys.Select(k => "traversal_" + k)], StringComparer.OrdinalIgnoreCase);
 
-    static readonly HashSet<string> StampKeys = new(["exe_size", "exe_time", "pid", "pid_time", "risk", .. SignedLineKeys, "sig"], StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> StampKeys = new(["exe_size", "exe_time", "pid", "pid_time", "offline", "risk", .. SignedLineKeys, "sig"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>An ini line's key as GetPrivateProfileString reads it (before the first '=', blanks trimmed, any case); null
     /// for a comment, a section or a line without '='.</summary>

@@ -1737,6 +1737,20 @@ static int admission_rules() {
     CHECK(signed_stamp(L"1", L"2", L"3", L"4", L"1", L"amd") == L"exe_size=1\r\nexe_time=2\r\npid=3\r\npid_time=4\r\nrisk=1\r\nvendor=amd\r\n");
     CHECK(risk_well_formed(L"", L"") && risk_well_formed(L"3", L"") && risk_well_formed(L"3", L"1"));
     CHECK(!risk_well_formed(L"", L"1") && !risk_well_formed(L"3", L"2") && !risk_well_formed(L"3", L"yes"));
+    // offline=battleye: after the binding, before risk= (never with it); ScsKiller.BoundTo + ScsKiller.OfflineLine
+    CHECK(signed_stamp(L"1", L"2", L"3", L"4", L"", L"", L"", L"", L"", L"", L"battleye") == L"exe_size=1\r\nexe_time=2\r\npid=3\r\npid_time=4\r\noffline=battleye\r\n");
+    CHECK(offline_well_formed(L"", L"", L"") && offline_well_formed(L"3", L"", L"battleye") && offline_well_formed(L"3", L"1", L""));
+    CHECK(!offline_well_formed(L"", L"", L"battleye") && !offline_well_formed(L"3", L"1", L"battleye") && !offline_well_formed(L"3", L"", L"eac")
+          && !offline_well_formed(L"3", L"", L"BattlEye"));
+    {
+        std::vector<std::wstring> m(std::begin(kAntiCheatMarkers), std::end(kAntiCheatMarkers));
+        m.push_back(L"BattlEye");   // a markers= name stays
+        const size_t n = m.size();
+        drop_battleye_markers(m);
+        CHECK(m.size() == n - std::size(kBattlEyeMarkers));
+        CHECK(std::count(m.begin(), m.end(), std::wstring(L"BattlEye")) == 1 && std::count(m.begin(), m.end(), std::wstring(L"*_BE.exe")) == 0);
+        CHECK(std::count(m.begin(), m.end(), std::wstring(L"EasyAntiCheat")) == 1);   // EasyAntiCheat's stay
+    }
     // the verdict: a finding refuses unless the session takes the risk, and the log then names them all
     std::string seen;
     const char* beside = "anti-cheat next to the exe";
