@@ -10,7 +10,7 @@ using static SCSKiller.Core.Unity.UnityFiles;
 
 namespace SCSKiller.Core.Unity;
 
-/// <summary>Unity games (UnityPlayer.dll + a *_Data folder). Shaders live in serialized Shader objects (class 48) as a
+/// <summary>Unity games (UnityPlayer.dll + a *_Data folder; before 2017.2 the exe is the player, beside its own &lt;exe&gt;_Data).Shaders live in serialized Shader objects (class 48) as a
 /// per-platform LZ4 blob, in loose files (globalgamemanagers.assets, resources.assets, sharedassets*, level*,
 /// Resources/unity_builtin_extra) and in UnityFS bundles anywhere under *_Data (Addressables / AssetBundles in
 /// StreamingAssets): <see cref="UnityFiles"/>. The d3d11 platform's blob holds DXBC containers that both the DX11 and the
@@ -44,8 +44,18 @@ public sealed class UnityReader : IEngineReader
                 .FirstOrDefault(d => File.Exists(GameFiles.Find(d, "globalgamemanagers")) || File.Exists(GameFiles.Find(d, "data.unity3d")));
             if (data != null) return (dir, data);
         }
+        // Unity before 2017.2 builds the player into the exe (no UnityPlayer.dll): the exe's own *_Data folder says it
+        var exeDir = Path.GetDirectoryName(game.ExePath);
+        if (!string.IsNullOrEmpty(exeDir) && Directory.Exists(exeDir)
+            && GameFiles.EnumerateDirectories(exeDir, Path.GetFileNameWithoutExtension(game.ExePath) + "_Data").FirstOrDefault() is { } ownData
+            && File.Exists(GameFiles.Find(ownData, "globalgamemanagers")) && Directory.Exists(Path.Combine(ownData, "Managed")))
+            return (exeDir, ownData);
         return null;
     }
+
+    /// <summary>The player binary of <paramref name="player"/>'s folder: UnityPlayer.dll, else the exe (Unity before 2017.2).</summary>
+    static string PlayerBinary(string player, Game game) =>
+        GameFiles.Find(player, "UnityPlayer.dll") is var dll && File.Exists(dll) ? dll : game.ExePath;
 
     public int ReaderVersion(EngineInfo engine) => 2;
 
@@ -67,7 +77,7 @@ public sealed class UnityReader : IEngineReader
                     catch (Exception e) when (e is IOException or InvalidDataException) { }
                 }
             }
-        if (string.IsNullOrEmpty(version)) version = PeVersionInfo.GetVersionInfo(GameFiles.Find(player, "UnityPlayer.dll")) is { FileMajorPart: > 0 } v
+        if (string.IsNullOrEmpty(version)) version = PeVersionInfo.GetVersionInfo(PlayerBinary(player, game)) is { FileMajorPart: > 0 } v
             ? $"{v.FileMajorPart}.{v.FileMinorPart}.{v.FileBuildPart}" : "?";
         var lastRun = LastRun(PlayerLog(data));
         var launch = UnrealRhi.LaunchOptions(game);
@@ -98,11 +108,16 @@ public sealed class UnityReader : IEngineReader
 
     static readonly Regex LogApi = new(@"^\s*Version:\s+(Direct3D 11|Direct3D 12|Vulkan)", RegexOptions.Multiline);
 
-    /// <summary><see cref="LocalLow"/>\&lt;company&gt;\&lt;product&gt;\Player.log (from *_Data\app.info); null when app.info doesn't name it.</summary>
+    /// <summary><see cref="LocalLow"/>\&lt;company&gt;\&lt;product&gt;\Player.log (from *_Data\app.info), else the
+    /// *_Data\output_log.txt players before 2018.3 write when it exists; null when neither is there to name.</summary>
     string? PlayerLog(string data)
     {
-        try { return File.ReadAllLines(GameFiles.Find(data, "app.info")) is [var company, var product, ..] ? Path.Combine(LocalLow, company, product, "Player.log") : null; }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+        string? local = null;
+        try { local = File.ReadAllLines(GameFiles.Find(data, "app.info")) is [var company, var product, ..] ? Path.Combine(LocalLow, company, product, "Player.log") : null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        if (local != null && File.Exists(local)) return local;
+        var old = GameFiles.Find(data, "output_log.txt");
+        return File.Exists(old) ? old : local;
     }
 
     /// <summary>The Player.log <see cref="Detect"/> reads the last run's API from, by size and write time: a new run redoes it.</summary>
