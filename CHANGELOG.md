@@ -10,6 +10,9 @@ All notable changes to the SCSKiller app and command line. Versions follow [Sema
 - **Arma Reforger** can record an offline session without BattlEye, as ELDEN RING can without EasyAntiCheat: allow it on
   the game's page and confirm each launch, at your own risk. Steam must be running. Only single player and servers
   without BattlEye work in that session.
+- **Company of Heroes 3** (Essence) is read from its shader archives: after a recording, its compile also builds the
+  shaders the game hasn't used yet. Without a recording it still asks for one, because its shaders don't carry their
+  root signatures.
 
 **Fixed**
 

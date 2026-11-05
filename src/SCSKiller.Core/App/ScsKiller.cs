@@ -213,7 +213,7 @@ public sealed partial class ScsKiller : IScsKiller
     public static string? SharedPackDir(string dataDir, GpuVendor v) => PackGpu(v) is { } gpu ? Path.Combine(dataDir, "community", "packs", gpu) : null;
 
     /// <summary>Unreal first, then the engines whose archives the carver can't see into (FromSoftware, Unity, RE Engine,
-    /// REDengine 3, Dagor, Source 2, RAGE, Naughty Dog, Santa Monica, Nixxes, Tank, Decima, Luminous, ForzaTech, BlackSpace, StarEngine, Swarm, Snowdrop, Enfusion) or whose pipelines and root signatures it doesn't know (Northlight), then the generic raw DXBC/DXIL carver.</summary>
+    /// REDengine 3, Dagor, Source 2, RAGE, Naughty Dog, Santa Monica, Nixxes, Tank, Decima, Luminous, ForzaTech, BlackSpace, StarEngine, Swarm, Snowdrop, Enfusion, Essence) or whose pipelines and root signatures it doesn't know (Northlight), then the generic raw DXBC/DXIL carver.</summary>
     public static IEngineReader DefaultReaders(string? dataDir = null)
     {
         dataDir ??= AppStore.DefaultDir;
@@ -236,6 +236,7 @@ public sealed partial class ScsKiller : IScsKiller
             (Swarm.SwarmReader.Family, new Swarm.SwarmReader()),
             (Snowdrop.SnowdropReader.Family, new Snowdrop.SnowdropReader(dataDir)),
             (Enfusion.EnfusionReader.Family, new Enfusion.EnfusionReader()),   // before Carved: its shaders are zlib inside .pak
+            (Essence.EssenceReader.Family, new Essence.EssenceReader()),   // before Carved: its shaders are Brotli inside .sga
             .. CarvedReader.Families.Select(f => (f, (IEngineReader)carved))]);
     }
 

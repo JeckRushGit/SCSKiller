@@ -24,7 +24,7 @@ the compile queue and the recorder's lifecycle. It builds for Windows (`net10.0-
   finds in the user's folders of games (each folder in one is a game). `GameFiles` picks the real
   exe and is the only anti-cheat detector. `Vac` decides Valve Anti-Cheat. `ReShade` classifies shader mods.
 - *Engine readers* (`Unreal/`, `Unity/`, `FromSoft/`, `ReEngine/`, `RedEngine/`, `Northlight/`, `Dagor/`, `Rage/`,
-  `Source2/`, `NaughtyDog/`, `SantaMonica/`, `Nixxes/`, `Tank/`, `Decima/`, `Luminous/`, `ForzaTech/`, `BlackSpace/`, `Swarm/`, `Snowdrop/`, `Enfusion/`, and `Carved/` for any
+  `Source2/`, `NaughtyDog/`, `SantaMonica/`, `Nixxes/`, `Tank/`, `Decima/`, `Luminous/`, `ForzaTech/`, `BlackSpace/`, `Swarm/`, `Snowdrop/`, `Enfusion/`, `Essence/`, and `Carved/` for any
   game shipping raw DXBC/DXIL): each lists the build's shaders as a `ShaderIndex` grouped in shader maps (shaders that can be drawn
   together) and reads their bytes on demand. A shader is the SHA-1 of its container (`ShaderContainer.Parse`). A DirectX 12
   game with no readable shader at all (`CarvedReader.RecordedOnly`) plans only the pipelines of this PC's recording, from
